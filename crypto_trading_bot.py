@@ -528,32 +528,78 @@ class SignalGenerator:
             rsi_live = df_live["rsi"].iloc[-1]
             slope_live = df_live["slope"].iloc[-1]
             
-            # Verificar condições de entrada
+            # Obter valores dos timeframes (conforme projeto original)
+            mm1_live = df_live["mm1"].iloc[-1]  # MM1 = preço anterior
+            center_2h = df_2h["center"].iloc[-1]  # Center do 2h
+            center_4h = df_4h["center"].iloc[-1]  # Center do 4h
+            sma_current = df_live["sma"].iloc[-1]
+            center_current = df_live["center"].iloc[-1]
+            
+            # Calcular distâncias corretas (MM1 para Centers dos timeframes)
+            dist_mm1_to_center_2h = abs(center_2h - mm1_live) / mm1_live * 100 if mm1_live > 0 else 0
+            dist_mm1_to_center_4h = abs(center_4h - mm1_live) / mm1_live * 100 if mm1_live > 0 else 0
+            
+            # Verificar condições de entrada - VERSÃO MELHORADA
             signal_type = "NEUTRAL"
             confidence = 0.0
             
-            if (slope_live > TradingConfig.MIN_SLOPE and 
-                TradingConfig.RSI_MIN < rsi_live < TradingConfig.RSI_MAX):
+            # Condições mais permissivas
+            rsi_ok = not np.isnan(rsi_live) and 20 < rsi_live < 80  # Mais amplo
+            slope_ok = not np.isnan(slope_live) and slope_live >= 0  # Aceita slope 0
+            
+            # Lógica melhorada - não só cruzamento, mas também posição relativa
+            if rsi_ok and slope_ok and not np.isnan(sma_current) and not np.isnan(center_current):
                 
-                if long_live.loc[last_idx_live]:
+                # Usar a menor distância dos timeframes como referência
+                min_distance = min(dist_mm1_to_center_2h, dist_mm1_to_center_4h)
+                
+                # LONG: SMA acima do Center (tendência de alta)
+                if sma_current > center_current:
                     signal_type = "LONG"
-                    confidence = 0.7
-                elif short_live.loc[last_idx_live]:
-                    signal_type = "SHORT"
-                    confidence = 0.7
+                    confidence = 0.5  # Confiança base
+                    
+                    # Aumentar confiança baseado na distância MM1->Center dos timeframes
+                    if min_distance > 2.0:  # Mais de 2% de distância (MIN_DIST original era 0.02)
+                        confidence += 0.2
+                    if rsi_live < 50:  # RSI não muito alto
+                        confidence += 0.1
+                    if long_live.loc[last_idx_live]:  # Cruzamento recente
+                        confidence += 0.2
                 
-                # Aumentar confiança se sinais concordam
-                if signal_type == "LONG" and long_2h.iloc[-1] and long_4h.iloc[-1]:
-                    confidence = 0.9
-                elif signal_type == "SHORT" and short_2h.iloc[-1] and short_4h.iloc[-1]:
-                    confidence = 0.9
+                # SHORT: SMA abaixo do Center (tendência de baixa)
+                elif sma_current < center_current:
+                    signal_type = "SHORT"
+                    confidence = 0.5  # Confiança base
+                    
+                    # Aumentar confiança baseado na distância MM1->Center dos timeframes
+                    if min_distance > 2.0:  # Mais de 2% de distância (MIN_DIST original era 0.02)
+                        confidence += 0.2
+                    if rsi_live > 50:  # RSI não muito baixo
+                        confidence += 0.1
+                    if short_live.loc[last_idx_live]:  # Cruzamento recente
+                        confidence += 0.2
+                
+                # Concordância entre timeframes aumenta confiança
+                if signal_type == "LONG":
+                    if long_2h.iloc[-1]:
+                        confidence += 0.1
+                    if long_4h.iloc[-1]:
+                        confidence += 0.1
+                elif signal_type == "SHORT":
+                    if short_2h.iloc[-1]:
+                        confidence += 0.1
+                    if short_4h.iloc[-1]:
+                        confidence += 0.1
+                
+                # Limitar confiança máxima
+                confidence = min(confidence, 0.95)
             
             # Criar indicadores
             indicators = TechnicalIndicators(
                 rsi=rsi_live,
                 sma=df_live["sma"].iloc[-1],
                 pivot_center=df_live["center"].iloc[-1],
-                distance_to_pivot=df_live["distance_to_pivot"].iloc[-1],
+                distance_to_pivot=min_distance,  # Distância correta: MM1 para Centers
                 slope=slope_live
             )
             
@@ -853,7 +899,10 @@ class TradingBot:
     def start(self):
         """Inicia o bot de trading"""
         self.is_running = True
-        print("🚀 Bot de Trading iniciado!")
+        
+        # Verificar se o resumo foi aceito
+        if not self._print_startup_summary():
+            return
         
         cycle = 1
         while self.is_running:
@@ -865,14 +914,15 @@ class TradingBot:
                 # Escanear ativos
                 valid_symbols = self.scanner.scan_all_assets()
                 
-                # Processar sinais
+                # Processar sinais - LIMIAR REDUZIDO
                 signals_to_trade = []
                 for symbol in valid_symbols:
                     signal = self.scanner.scan_results.get(symbol)
                     if (signal and signal.signal_type != "NEUTRAL" and 
-                        signal.confidence > 0.7 and 
+                        signal.confidence > 0.5 and  # Reduzido de 0.7 para 0.5
                         symbol not in self.active_trades):
                         signals_to_trade.append(signal)
+                        print(f"🎯 SINAL DETECTADO: {symbol} - {signal.signal_type} - Confiança: {signal.confidence:.1%}")
                 
                 # Executar trades
                 if signals_to_trade:
@@ -1006,6 +1056,116 @@ class TradingBot:
                     trade_manager.close_position(current_price, "SHUTDOWN")
         
         print("🏁 Bot de Trading parado!")
+    
+    def _print_startup_summary(self):
+        """Imprime resumo detalhado dos parâmetros antes de iniciar"""
+        print(f"\n{'='*80}")
+        print("🚀 ROBÔ DE TRADING DE CRIPTOMOEDAS BINGX")
+        print(f"{'='*80}")
+        
+        # Informações gerais
+        print(f"\n📊 CONFIGURAÇÕES GERAIS")
+        print(f"{'='*50}")
+        print(f"🎯 Modo de Operação: {'DEMO (Simulação)' if self.api.demo_mode else '🔴 REAL (Dinheiro real)'}")
+        print(f"💰 Quantidade por Trade: {TradingConfig.QUANTIDADE_USDT} USDT")
+        print(f"📈 Max Trades Simultâneos: {TradingConfig.MAX_TRADES_SIMULTANEOS}")
+        print(f"🕒 Timezone: America/Sao_Paulo (UTC-3)")
+        print(f"🔗 Exchange: BingX (Mercado Futuro)")
+        
+        # Parâmetros de risco
+        print(f"\n🛡️ GERENCIAMENTO DE RISCO")
+        print(f"{'='*50}")
+        print(f"🛑 Stop Loss: {TradingConfig.STOP_LOSS_PCT*100:.1f}%")
+        print(f"⚖️ Break Even: {TradingConfig.BREAK_EVEN_PCT*100:.1f}%")
+        print(f"📈 Trailing Trigger: {TradingConfig.TRAILING_TRIGGER_PCT*100:.1f}%")
+        
+        # Indicadores técnicos
+        print(f"\n📊 INDICADORES TÉCNICOS")
+        print(f"{'='*50}")
+        print(f"📉 RSI Período: {TradingConfig.RSI_PERIOD}")
+        print(f"📊 RSI Faixa: {30} - {80} (melhorado de {TradingConfig.RSI_MIN}-{TradingConfig.RSI_MAX})")
+        print(f"📈 SMA Período: {TradingConfig.SMA_PERIOD}")
+        print(f"📐 Slope Mínimo: {TradingConfig.MIN_SLOPE} (aceita movimento zero)")
+        print(f"📏 Distância Mínima: 2.0% (MM1 → Center timeframes)")
+        
+        # Timeframes
+        print(f"\n⏰ TIMEFRAMES CUSTOMIZADOS")
+        print(f"{'='*50}")
+        print(f"🔹 Base: 5 minutos (dados coletados)")
+        print(f"🔹 2h: {TradingConfig.TIMEFRAME_BLOCKS['2h']} blocos × 5min = 2 horas")
+        print(f"🔹 4h: {TradingConfig.TIMEFRAME_BLOCKS['4h']} blocos × 5min = 4 horas")
+        print(f"🔄 Construção: Contínua (não padrão de corretora)")
+        
+        # Lógica de sinais
+        print(f"\n🎯 LÓGICA DE SINAIS")
+        print(f"{'='*50}")
+        print(f"📊 Indicadores: RSI + SMA + Pivot Point")
+        print(f"🔍 Detecção: Posição relativa SMA vs Pivot Center")
+        print(f"📈 LONG: SMA > Pivot Center (tendência alta)")
+        print(f"📉 SHORT: SMA < Pivot Center (tendência baixa)")
+        print(f"✅ Confiança Mínima: 50% (reduzido de 70%)")
+        print(f"🎯 Confiança Máxima: 95%")
+        
+        # Sistema de confiança
+        print(f"\n🎖️ SISTEMA DE CONFIANÇA")
+        print(f"{'='*50}")
+        print(f"🔹 Base: 50%")
+        print(f"🔹 +20% se distância MM1→Center > 2%")
+        print(f"🔹 +10% se RSI favorável (LONG<50, SHORT>50)")
+        print(f"🔹 +20% se cruzamento recente detectado")
+        print(f"🔹 +10% concordância timeframe 2h")
+        print(f"🔹 +10% concordância timeframe 4h")
+        
+        # Monitoramento
+        print(f"\n👀 MONITORAMENTO")
+        print(f"{'='*50}")
+        print(f"🔄 Ciclo sem sinais: 5 minutos")
+        print(f"⚡ Ciclo com trades: 1 minuto")
+        print(f"📊 Update trades: 5 segundos")
+        print(f"📢 Relatório posições: 3 minutos")
+        
+        # API e segurança
+        print(f"\n🔐 API E SEGURANÇA")
+        print(f"{'='*50}")
+        api_configured = bool(os.getenv("BINGX_API_KEY") and os.getenv("BINGX_SECRET_KEY"))
+        print(f"🔑 API Configurada: {'✅ Sim' if api_configured else '❌ Não'}")
+        print(f"🛡️ Rate Limiting: Automático")
+        print(f"💾 Cache de Símbolos: 1 hora")
+        print(f"⚠️ Validação de Dados: Ativa")
+        
+        # Ativos estimados
+        print(f"\n📦 SCANNER DE ATIVOS")
+        print(f"{'='*50}")
+        print(f"🎯 Target: ~550 ativos do mercado futuro")
+        print(f"🔍 Filtro: Padrão XXX-USDT")
+        print(f"✅ Validação: Dados OHLCV completos")
+        print(f"⏱️ Tempo estimado por ciclo: 5-10 minutos")
+        
+        print(f"\n{'='*80}")
+        if self.api.demo_mode:
+            print("🎮 MODO DEMO ATIVADO - Nenhum dinheiro real será usado")
+            print("💡 Para modo real, altere DEMO_MODE=false no .env")
+        else:
+            print("🔴 ATENÇÃO: MODO REAL ATIVADO!")
+            print("💰 Dinheiro real será usado nas operações!")
+            print("⚠️ Certifique-se de que os parâmetros estão corretos!")
+        print(f"{'='*80}")
+        
+        # Aguardar confirmação em modo real
+        if not self.api.demo_mode:
+            print("\n⏳ Aguardando 10 segundos antes de iniciar...")
+            print("   Pressione Ctrl+C para cancelar")
+            try:
+                for i in range(10, 0, -1):
+                    print(f"   {i}...", end=" ", flush=True)
+                    time.sleep(1)
+                print("\n")
+            except KeyboardInterrupt:
+                print("\n🛑 Operação cancelada pelo usuário")
+                return False
+        
+        print("🚀 Iniciando operações...")
+        return True
 
 # ============================
 # ADAPTAÇÃO PARA MERCADO SPOT
