@@ -564,9 +564,15 @@ class BingXAPI:
         positions = []
         for pos_data in data.get("data", []):
             if float(pos_data.get("positionAmt", 0)) != 0:
+                # Determinar side - pode vir como 'positionSide' ou 'side' ou inferir do tamanho
+                side = pos_data.get("positionSide", pos_data.get("side", "UNKNOWN"))
+                if side == "UNKNOWN":
+                    # Inferir do tamanho da posição
+                    side = "LONG" if float(pos_data.get("positionAmt", 0)) > 0 else "SHORT"
+                
                 positions.append(Position(
                     symbol=pos_data["symbol"],
-                    side=pos_data["positionSide"],
+                    side=side,
                     size=float(pos_data["positionAmt"]),
                     entry_price=float(pos_data["entryPrice"]),
                     mark_price=float(pos_data["markPrice"]),
@@ -776,6 +782,12 @@ class SignalGenerator:
             # Condições mais permissivas
             rsi_ok = not np.isnan(rsi_live) and 20 < rsi_live < 80  # Mais amplo
             slope_ok = not np.isnan(slope_live) and slope_live >= 0  # Aceita slope 0
+            
+            # Inicializar variáveis de cruzamento
+            long_cross_4h = False
+            short_cross_4h = False
+            distance_4h_ok = False
+            cross_detected = False
             
             # LÓGICA CORRIGIDA - Entrada no timeframe 4h
             if rsi_ok and slope_ok and not np.isnan(center_4h) and not np.isnan(mm1_4h):
