@@ -547,49 +547,55 @@ class SignalGenerator:
             rsi_ok = not np.isnan(rsi_live) and 20 < rsi_live < 80  # Mais amplo
             slope_ok = not np.isnan(slope_live) and slope_live >= 0  # Aceita slope 0
             
-            # Lógica melhorada - não só cruzamento, mas também posição relativa
-            if rsi_ok and slope_ok and not np.isnan(sma_current) and not np.isnan(center_current):
+            # LÓGICA CORRIGIDA - Entrada no timeframe 4h
+            if rsi_ok and slope_ok and not np.isnan(center_4h) and not np.isnan(mm1_live):
                 
-                # Usar a menor distância dos timeframes como referência
-                min_distance = min(dist_mm1_to_center_2h, dist_mm1_to_center_4h)
+                # Verificar cruzamento no timeframe 4h
+                mm1_4h_prev = df_4h["mm1"].iloc[-2] if len(df_4h) > 1 else mm1_live
+                center_4h_prev = df_4h["center"].iloc[-2] if len(df_4h) > 1 else center_4h
                 
-                # LONG: SMA acima do Center (tendência de alta)
-                if sma_current > center_current:
+                # Detectar cruzamentos no 4h
+                long_cross_4h = (mm1_live > center_4h) and (mm1_4h_prev <= center_4h_prev)
+                short_cross_4h = (mm1_live < center_4h) and (mm1_4h_prev >= center_4h_prev)
+                
+                # Verificar distância ≥ 2%
+                distance_4h_ok = dist_mm1_to_center_4h >= 2.0
+                
+                # CONDIÇÕES DE ENTRADA (timeframe 4h):
+                # 1. MM1 cruza Center OU
+                # 2. Distância MM1 para Center ≥ 2%
+                
+                # LONG: MM1 acima da Center no 4h
+                if mm1_live > center_4h and (long_cross_4h or distance_4h_ok):
                     signal_type = "LONG"
                     confidence = 0.5  # Confiança base
                     
-                    # Aumentar confiança baseado na distância MM1->Center dos timeframes
-                    if min_distance > 2.0:  # Mais de 2% de distância (MIN_DIST original era 0.02)
+                    # Aumentar confiança baseado no tipo de entrada
+                    if long_cross_4h:  # Cruzamento detectado
+                        confidence += 0.3
+                    if distance_4h_ok:  # Distância adequada
                         confidence += 0.2
-                    if rsi_live < 50:  # RSI não muito alto
+                    if rsi_live < 50:  # RSI favorável
                         confidence += 0.1
-                    if long_live.loc[last_idx_live]:  # Cruzamento recente
-                        confidence += 0.2
-                
-                # SHORT: SMA abaixo do Center (tendência de baixa)
-                elif sma_current < center_current:
+                    
+                # SHORT: MM1 abaixo da Center no 4h
+                elif mm1_live < center_4h and (short_cross_4h or distance_4h_ok):
                     signal_type = "SHORT"
                     confidence = 0.5  # Confiança base
                     
-                    # Aumentar confiança baseado na distância MM1->Center dos timeframes
-                    if min_distance > 2.0:  # Mais de 2% de distância (MIN_DIST original era 0.02)
+                    # Aumentar confiança baseado no tipo de entrada
+                    if short_cross_4h:  # Cruzamento detectado
+                        confidence += 0.3
+                    if distance_4h_ok:  # Distância adequada
                         confidence += 0.2
-                    if rsi_live > 50:  # RSI não muito baixo
+                    if rsi_live > 50:  # RSI favorável
                         confidence += 0.1
-                    if short_live.loc[last_idx_live]:  # Cruzamento recente
-                        confidence += 0.2
                 
-                # Concordância entre timeframes aumenta confiança
-                if signal_type == "LONG":
-                    if long_2h.iloc[-1]:
-                        confidence += 0.1
-                    if long_4h.iloc[-1]:
-                        confidence += 0.1
-                elif signal_type == "SHORT":
-                    if short_2h.iloc[-1]:
-                        confidence += 0.1
-                    if short_4h.iloc[-1]:
-                        confidence += 0.1
+                # Concordância com timeframe 2h aumenta confiança
+                if signal_type == "LONG" and long_2h.iloc[-1]:
+                    confidence += 0.1
+                elif signal_type == "SHORT" and short_2h.iloc[-1]:
+                    confidence += 0.1
                 
                 # Limitar confiança máxima
                 confidence = min(confidence, 0.95)
@@ -598,8 +604,8 @@ class SignalGenerator:
             indicators = TechnicalIndicators(
                 rsi=rsi_live,
                 sma=df_live["sma"].iloc[-1],
-                pivot_center=df_live["center"].iloc[-1],
-                distance_to_pivot=min_distance,  # Distância correta: MM1 para Centers
+                pivot_center=center_4h,  # Center do timeframe 4h (principal)
+                distance_to_pivot=dist_mm1_to_center_4h,  # Distância MM1 para Center 4h
                 slope=slope_live
             )
             
@@ -1097,24 +1103,23 @@ class TradingBot:
         print(f"🔄 Construção: Contínua (não padrão de corretora)")
         
         # Lógica de sinais
-        print(f"\n🎯 LÓGICA DE SINAIS")
+        print(f"\n🎯 LÓGICA DE SINAIS (TIMEFRAME 4H)")
         print(f"{'='*50}")
-        print(f"📊 Indicadores: RSI + SMA + Pivot Point")
-        print(f"🔍 Detecção: Posição relativa SMA vs Pivot Center")
-        print(f"📈 LONG: SMA > Pivot Center (tendência alta)")
-        print(f"📉 SHORT: SMA < Pivot Center (tendência baixa)")
-        print(f"✅ Confiança Mínima: 50% (reduzido de 70%)")
+        print(f"📊 Indicadores: RSI + MM1 + Pivot Center")
+        print(f"🔍 Detecção: MM1 vs Pivot Center no timeframe 4h")
+        print(f"📈 LONG: MM1 > Center 4h + (cruzamento OU distância ≥2%)")
+        print(f"📉 SHORT: MM1 < Center 4h + (cruzamento OU distância ≥2%)")
+        print(f"✅ Confiança Mínima: 50%")
         print(f"🎯 Confiança Máxima: 95%")
         
         # Sistema de confiança
-        print(f"\n🎖️ SISTEMA DE CONFIANÇA")
+        print(f"\n🎖️ SISTEMA DE CONFIANÇA (TIMEFRAME 4H)")
         print(f"{'='*50}")
         print(f"🔹 Base: 50%")
-        print(f"🔹 +20% se distância MM1→Center > 2%")
+        print(f"🔹 +30% se cruzamento MM1×Center detectado no 4h")
+        print(f"🔹 +20% se distância MM1→Center 4h ≥ 2%")
         print(f"🔹 +10% se RSI favorável (LONG<50, SHORT>50)")
-        print(f"🔹 +20% se cruzamento recente detectado")
         print(f"🔹 +10% concordância timeframe 2h")
-        print(f"🔹 +10% concordância timeframe 4h")
         
         # Monitoramento
         print(f"\n👀 MONITORAMENTO")
