@@ -38,11 +38,158 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
+import aiohttp
+from functools import lru_cache
 
 # Carregar variáveis de ambiente
 load_dotenv()
 
 print(f"🚀 Robô de Trading BingX iniciado: {__file__}")
+
+# ============================
+# SISTEMA DE VISUALIZAÇÃO AVANÇADA
+# ============================
+
+class TradingDisplay:
+    """Sistema de visualização avançada para traders"""
+    
+    @staticmethod
+    def clear_screen():
+        """Limpa a tela"""
+        os.system('cls' if os.name == 'nt' else 'clear')
+    
+    @staticmethod
+    def print_header(title: str, width: int = 80):
+        """Imprime cabeçalho estilizado"""
+        print(f"\n{'='*width}")
+        print(f"{title:^{width}}")
+        print(f"{'='*width}")
+    
+    @staticmethod
+    def print_section(title: str, width: int = 60):
+        """Imprime seção estilizada"""
+        print(f"\n{title}")
+        print(f"{'-'*width}")
+    
+    @staticmethod
+    def format_price(price: float, decimals: int = 6) -> str:
+        """Formata preço com cores"""
+        return f"{price:.{decimals}f}"
+    
+    @staticmethod
+    def format_percentage(value: float, decimals: int = 2) -> str:
+        """Formata porcentagem com cores"""
+        color = "🟢" if value >= 0 else "🔴"
+        return f"{color} {value:+.{decimals}f}%"
+    
+    @staticmethod
+    def format_pnl(pnl: float, currency: str = "USDT") -> str:
+        """Formata PnL com cores"""
+        color = "💚" if pnl >= 0 else "❤️"
+        return f"{color} {pnl:+.2f} {currency}"
+    
+    @staticmethod
+    def print_signal_analysis(signal: TradingSignal):
+        """Imprime análise detalhada do sinal"""
+        symbol_clean = signal.symbol.replace('-USDT', '')
+        
+        print(f"\n╭{'─'*70}╮")
+        print(f"│{f'🎯 ANÁLISE DE SINAL - {symbol_clean}':^70}│")
+        print(f"├{'─'*70}┤")
+        
+        # Linha 1: Tipo e Confiança
+        signal_emoji = "📈" if signal.signal_type == "LONG" else "📉"
+        confidence_bar = "█" * int(signal.confidence * 10) + "░" * (10 - int(signal.confidence * 10))
+        print(f"│ {signal_emoji} Tipo: {signal.signal_type:<6} │ 📊 Confiança: {signal.confidence:.1%} [{confidence_bar}] │")
+        
+        # Linha 2: Preço e Timestamp
+        timestamp_str = signal.timestamp.strftime("%H:%M:%S")
+        print(f"│ 💰 Preço: {TradingDisplay.format_price(signal.price):<12} │ 🕒 Hora: {timestamp_str:<8} │")
+        
+        print(f"├{'─'*70}┤")
+        
+        # Indicadores técnicos
+        rsi_color = "🟡" if 30 < signal.indicators.rsi < 70 else "🔴" if signal.indicators.rsi > 70 else "🟢"
+        print(f"│ {rsi_color} RSI: {signal.indicators.rsi:>6.2f} │ 📈 SMA: {signal.indicators.sma:>12.6f} │")
+        print(f"│ 🎯 Pivot: {signal.indicators.pivot_center:>10.6f} │ 📏 Dist: {signal.indicators.distance_to_pivot:>8.2f}% │")
+        
+        print(f"├{'─'*70}┤")
+        
+        # Condições de entrada
+        cross_status = "✅" if signal.cross_detected else "❌"
+        distance_status = "✅" if signal.distance_ok else "❌"
+        rsi_status = "✅" if signal.rsi_favorable else "❌"
+        tf_status = "✅" if signal.timeframe_agreement else "❌"
+        
+        print(f"│ {cross_status} Cruzamento │ {distance_status} Distância≥2% │ {rsi_status} RSI Favorável │ {tf_status} TF 2h │")
+        
+        print(f"╰{'─'*70}╯")
+    
+    @staticmethod
+    def print_trade_dashboard(active_trades: dict, total_pnl: float = 0):
+        """Dashboard de trades ativos"""
+        if not active_trades:
+            print("\n📊 DASHBOARD - Nenhum trade ativo")
+            return
+        
+        TradingDisplay.print_header("📊 DASHBOARD DE TRADES ATIVOS", 80)
+        
+        print(f"┌{'─'*76}┐")
+        print(f"│{'SÍMBOLO':<12}│{'TIPO':<6}│{'ENTRADA':<12}│{'ATUAL':<12}│{'PNL':<10}│{'STATUS':<18}│")
+        print(f"├{'─'*76}┤")
+        
+        for symbol, trade_manager in active_trades.items():
+            status = trade_manager.get_status()
+            if status.get("active"):
+                symbol_short = symbol.replace('-USDT', '')
+                side_emoji = "📈" if status["side"] == "LONG" else "📉"
+                
+                # Status visual
+                if status["break_even_active"] and status["trailing_active"]:
+                    status_text = "🟢 BE+Trail"
+                elif status["break_even_active"]:
+                    status_text = "🟡 Break Even"
+                elif status["trailing_active"]:
+                    status_text = "🔵 Trailing"
+                else:
+                    status_text = "🔴 Inicial"
+                
+                pnl_formatted = TradingDisplay.format_pnl(status["pnl"])
+                
+                print(f"│{symbol_short:<12}│{side_emoji:<6}│{status['entry_price']:<12.6f}│{status['current_price']:<12.6f}│{pnl_formatted:<10}│{status_text:<18}│")
+        
+        print(f"└{'─'*76}┘")
+        
+        # Resumo
+        total_formatted = TradingDisplay.format_pnl(total_pnl)
+        print(f"\n💰 PnL Total: {total_formatted} │ 📊 Trades Ativos: {len(active_trades)}")
+    
+    @staticmethod
+    def print_performance_metrics(api_metrics: dict, scan_time: float = 0, symbols_scanned: int = 0):
+        """Métricas de performance do sistema"""
+        TradingDisplay.print_section("⚡ MÉTRICAS DE PERFORMANCE")
+        
+        print(f"📡 API Calls: {api_metrics['api_calls']} │ 🎯 Cache Hits: {api_metrics['cache_hits']} ({api_metrics['cache_hit_ratio']:.1f}%)")
+        print(f"⏱️ Tempo médio API: {api_metrics['avg_request_time']*1000:.0f}ms │ 🔍 Símbolos escaneados: {symbols_scanned}")
+        if scan_time > 0:
+            print(f"🚀 Tempo de scan: {scan_time:.1f}s │ ⚡ Velocidade: {symbols_scanned/scan_time:.1f} símbolos/s")
+    
+    @staticmethod
+    def print_market_summary(valid_symbols: int, invalid_symbols: int, signals_found: int):
+        """Resumo do mercado"""
+        total = valid_symbols + invalid_symbols
+        success_rate = (valid_symbols / max(1, total)) * 100
+        signal_rate = (signals_found / max(1, valid_symbols)) * 100
+        
+        print(f"\n📈 RESUMO DO MERCADO")
+        print(f"├─ ✅ Válidos: {valid_symbols} ({success_rate:.1f}%)")
+        print(f"├─ ❌ Inválidos: {invalid_symbols}")
+        print(f"├─ 🎯 Sinais: {signals_found} ({signal_rate:.1f}%)")
+        print(f"└─ 📊 Total: {total}")
+
+print(f"🎨 Sistema de visualização avançada carregado")
 
 # ============================
 # CONFIGURAÇÕES GLOBAIS
@@ -117,6 +264,10 @@ class TradingSignal:
     price: float
     confidence: float
     indicators: TechnicalIndicators
+    cross_detected: bool = False
+    distance_ok: bool = False
+    rsi_favorable: bool = False
+    timeframe_agreement: bool = False
 
 class OrderType(Enum):
     """Tipos de ordem"""
@@ -157,7 +308,7 @@ class Position:
 # ============================
 
 class BingXAPI:
-    """Cliente para API da BingX"""
+    """Cliente para API da BingX com otimização de performance"""
     
     def __init__(self, demo_mode: bool = True):
         self.demo_mode = demo_mode
@@ -173,6 +324,16 @@ class BingXAPI:
         # Cache para otimização
         self.symbols_cache = {}
         self.last_symbols_update = 0
+        self.price_cache = {}
+        self.price_cache_ttl = {}
+        
+        # Pool de threads para requests paralelos
+        self.executor = ThreadPoolExecutor(max_workers=10)
+        
+        # Métricas de performance
+        self.api_calls_count = 0
+        self.cache_hits = 0
+        self.total_request_time = 0
         
     def _generate_signature(self, params: str) -> str:
         """Gera assinatura para autenticação"""
@@ -183,18 +344,21 @@ class BingXAPI:
         ).hexdigest()
     
     def _make_request(self, endpoint: str, params: dict = None, method: str = "GET") -> dict:
-        """Faz requisição para API"""
+        """Faz requisição para API com métricas"""
         if params is None:
             params = {}
             
         url = f"{self.base_url}{endpoint}"
+        self.api_calls_count += 1
         
         try:
+            start_time = time.time()
             if method == "GET":
                 response = self.session.get(url, params=params, timeout=10)
             else:
                 response = self.session.post(url, json=params, timeout=10)
                 
+            self.total_request_time += time.time() - start_time
             response.raise_for_status()
             return response.json()
             
@@ -277,16 +441,43 @@ class BingXAPI:
         return df
     
     def get_latest_price(self, symbol: str) -> Optional[float]:
-        """Obtém preço mais recente do símbolo"""
+        """Obtém preço mais recente do símbolo com cache"""
+        current_time = time.time()
+        
+        # Verificar cache (TTL: 5 segundos)
+        if (symbol in self.price_cache and 
+            symbol in self.price_cache_ttl and
+            current_time - self.price_cache_ttl[symbol] < 5):
+            self.cache_hits += 1
+            return self.price_cache[symbol]
+        
         endpoint = f"{TradingConfig.FUTURES_API_PATH}/quote/price"
         params = {"symbol": symbol}
         
+        start_time = time.time()
         data = self._make_request(endpoint, params)
+        self.total_request_time += time.time() - start_time
         
         if data.get("code") != 0:
             return None
         
-        return float(data.get("data", {}).get("price", 0))
+        price = float(data.get("data", {}).get("price", 0))
+        
+        # Atualizar cache
+        self.price_cache[symbol] = price
+        self.price_cache_ttl[symbol] = current_time
+        
+        return price
+    
+    def get_performance_metrics(self) -> dict:
+        """Retorna métricas de performance da API"""
+        return {
+            "api_calls": self.api_calls_count,
+            "cache_hits": self.cache_hits,
+            "cache_hit_ratio": self.cache_hits / max(1, self.api_calls_count) * 100,
+            "avg_request_time": self.total_request_time / max(1, self.api_calls_count),
+            "total_request_time": self.total_request_time
+        }
     
     def place_order(self, order: Order) -> dict:
         """Coloca ordem no mercado"""
@@ -609,13 +800,23 @@ class SignalGenerator:
                 slope=slope_live
             )
             
+            # Determinar flags para visualização
+            cross_detected = long_cross_4h or short_cross_4h
+            distance_ok = distance_4h_ok
+            rsi_favorable = (signal_type == "LONG" and rsi_live < 50) or (signal_type == "SHORT" and rsi_live > 50)
+            timeframe_agreement = (signal_type == "LONG" and long_2h.iloc[-1]) or (signal_type == "SHORT" and short_2h.iloc[-1])
+            
             return TradingSignal(
                 symbol=symbol,
                 signal_type=signal_type,
                 timestamp=datetime.datetime.now(pytz.timezone("America/Sao_Paulo")),
                 price=current_price,
                 confidence=confidence,
-                indicators=indicators
+                indicators=indicators,
+                cross_detected=cross_detected,
+                distance_ok=distance_ok,
+                rsi_favorable=rsi_favorable,
+                timeframe_agreement=timeframe_agreement
             )
             
         except Exception as e:
@@ -821,52 +1022,78 @@ class TradeManager:
 # ============================
 
 class AssetScanner:
-    """Scanner de ativos do mercado"""
+    """Scanner de ativos do mercado com processamento paralelo"""
     
     def __init__(self, api: BingXAPI):
         self.api = api
         self.valid_symbols = []
         self.invalid_symbols = []
         self.scan_results = {}
+        self.signals_found = 0
         
+    def scan_symbol_parallel(self, symbol: str) -> tuple:
+        """Analisa um símbolo (para processamento paralelo)"""
+        try:
+            signal = SignalGenerator.analyze_symbol(self.api, symbol)
+            return symbol, signal, None
+        except Exception as e:
+            return symbol, None, str(e)
+    
     def scan_all_assets(self) -> List[str]:
-        """Escaneia todos os ativos disponíveis"""
-        print("\n🔍 Iniciando escaneamento global de ativos...")
-        start_time = datetime.datetime.now()
+        """Escaneia todos os ativos disponíveis com processamento paralelo"""
+        TradingDisplay.print_header("🔍 SCANNER DE MERCADO - ANÁLISE PARALELA", 80)
+        start_time = time.time()
         
         symbols = self.api.get_futures_symbols()
         self.valid_symbols = []
         self.invalid_symbols = []
+        self.signals_found = 0
         
-        for i, symbol in enumerate(symbols):
-            print(f"\n{'='*60}")
-            print(f"🔍 [{i+1}/{len(symbols)}] Analisando {symbol}...")
+        print(f"🎯 Escaneando {len(symbols)} símbolos em paralelo...")
+        print(f"⚡ Threads: {min(10, len(symbols))}")
+        
+        # Processamento paralelo com ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            # Submeter todas as tarefas
+            future_to_symbol = {
+                executor.submit(self.scan_symbol_parallel, symbol): symbol 
+                for symbol in symbols
+            }
             
-            try:
-                # Analisar símbolo
-                signal = SignalGenerator.analyze_symbol(self.api, symbol)
+            # Processar resultados conforme completam
+            completed = 0
+            for future in as_completed(future_to_symbol):
+                symbol, signal, error = future.result()
+                completed += 1
+                
+                # Progress bar
+                progress = (completed / len(symbols)) * 100
+                bar_length = 30
+                filled_length = int(bar_length * completed // len(symbols))
+                bar = "█" * filled_length + "░" * (bar_length - filled_length)
+                
+                print(f"\r🔄 Progresso: [{bar}] {progress:.1f}% ({completed}/{len(symbols)})", end="", flush=True)
                 
                 if signal:
                     self.valid_symbols.append(symbol)
                     self.scan_results[symbol] = signal
-                    self._print_symbol_analysis(signal)
+                    
+                    if signal.signal_type != "NEUTRAL":
+                        self.signals_found += 1
+                        print(f"\n🎯 SINAL: {symbol} - {signal.signal_type} ({signal.confidence:.1%})")
                 else:
                     self.invalid_symbols.append(symbol)
-                    print(f"⚠️ {symbol} - Dados insuficientes ou inválidos")
-                
-            except Exception as e:
-                print(f"❌ Erro ao processar {symbol}: {e}")
-                self.invalid_symbols.append(symbol)
-            
-            # Pequena pausa para evitar rate limit
-            time.sleep(0.5)
+                    if error:
+                        print(f"\n❌ {symbol}: {error}")
         
-        duration = datetime.datetime.now() - start_time
-        print(f"\n{'='*60}")
-        print(f"🏁 Escaneamento concluído!")
-        print(f"✅ Ativos válidos: {len(self.valid_symbols)}")
-        print(f"❌ Ativos inválidos: {len(self.invalid_symbols)}")
-        print(f"⏱️ Duração: {duration}")
+        print()  # Nova linha após progress bar
+        
+        scan_time = time.time() - start_time
+        
+        # Exibir métricas de performance
+        api_metrics = self.api.get_performance_metrics()
+        TradingDisplay.print_performance_metrics(api_metrics, scan_time, len(symbols))
+        TradingDisplay.print_market_summary(len(self.valid_symbols), len(self.invalid_symbols), self.signals_found)
         
         return self.valid_symbols
     
@@ -920,34 +1147,51 @@ class TradingBot:
                 # Escanear ativos
                 valid_symbols = self.scanner.scan_all_assets()
                 
-                # Processar sinais - LIMIAR REDUZIDO
+                # Processar sinais com visualização melhorada
                 signals_to_trade = []
                 for symbol in valid_symbols:
                     signal = self.scanner.scan_results.get(symbol)
                     if (signal and signal.signal_type != "NEUTRAL" and 
-                        signal.confidence > 0.5 and  # Reduzido de 0.7 para 0.5
+                        signal.confidence > 0.5 and 
                         symbol not in self.active_trades):
                         signals_to_trade.append(signal)
-                        print(f"🎯 SINAL DETECTADO: {symbol} - {signal.signal_type} - Confiança: {signal.confidence:.1%}")
+                        
+                        # Mostrar análise detalhada do sinal
+                        TradingDisplay.print_signal_analysis(signal)
                 
-                # Executar trades
+                # Executar trades IMEDIATAMENTE quando detectados
                 if signals_to_trade:
-                    self._execute_trades(signals_to_trade)
+                    executed_count = self._execute_trades(signals_to_trade)
+                    
+                    if executed_count > 0:
+                        # Mostrar dashboard atualizado
+                        total_pnl = sum(tm.get_status().get("pnl", 0) for tm in self.active_trades.values())
+                        TradingDisplay.print_trade_dashboard(self.active_trades, total_pnl)
+                    
+                    # Continuar escaneamento para novos sinais
+                    print("\n🔄 Continuando escaneamento para novos sinais...")
+                    cycle += 1
+                    continue
                 
                 # Monitorar trades ativos
                 self._monitor_active_trades()
                 
-                # Relatório de status
-                self._print_status_report()
+                # Dashboard atualizado a cada 3 ciclos
+                if cycle % 3 == 0 and self.active_trades:
+                    total_pnl = sum(tm.get_status().get("pnl", 0) for tm in self.active_trades.values())
+                    TradingDisplay.print_trade_dashboard(self.active_trades, total_pnl)
+                
+                # Métricas de performance a cada 5 ciclos
+                if cycle % 5 == 0:
+                    api_metrics = self.api.get_performance_metrics()
+                    TradingDisplay.print_performance_metrics(api_metrics)
                 
                 cycle += 1
                 
-                # Pausa antes do próximo ciclo
-                if not signals_to_trade:
-                    print("💤 Aguardando próximo ciclo...")
-                    time.sleep(300)  # 5 minutos
-                else:
-                    time.sleep(60)  # 1 minuto se há trades ativos
+                # Pausa otimizada
+                wait_time = 15 if self.active_trades else 30
+                print(f"⏳ Próximo scan em {wait_time}s...")
+                time.sleep(wait_time)
                     
             except KeyboardInterrupt:
                 print("\n🛑 Interrupção solicitada pelo usuário...")
@@ -958,28 +1202,53 @@ class TradingBot:
                 time.sleep(30)
     
     def _execute_trades(self, signals: List[TradingSignal]):
-        """Executa trades baseados nos sinais"""
-        print(f"\n📊 Processando {len(signals)} sinais de trading...")
+        """Executa trades IMEDIATAMENTE baseados nos sinais"""
+        print(f"\n⚡ EXECUÇÃO IMEDIATA DE {len(signals)} SINAIS!")
+        print(f"{'='*60}")
+        
+        executed_count = 0
         
         for signal in signals:
             if len(self.active_trades) >= TradingConfig.MAX_TRADES_SIMULTANEOS:
                 print(f"⚠️ Limite de trades simultâneos atingido ({TradingConfig.MAX_TRADES_SIMULTANEOS})")
+                print(f"📊 Sinais restantes serão ignorados neste ciclo")
                 break
+            
+            print(f"\n🎯 EXECUTANDO: {signal.symbol}")
+            print(f"   📈 Tipo: {signal.signal_type}")
+            print(f"   📊 Confiança: {signal.confidence:.1%}")
+            print(f"   💰 Preço: {signal.price:.6f}")
             
             # Criar gerenciador de trade
             trade_manager = TradeManager(self.api, signal.symbol, signal)
             
-            # Tentar entrar na posição
+            # Tentar entrar na posição IMEDIATAMENTE
             if trade_manager.enter_position():
                 self.active_trades[signal.symbol] = trade_manager
+                executed_count += 1
                 
-                # Iniciar thread de monitoramento
+                print(f"   ✅ ENTRADA EXECUTADA!")
+                
+                # Iniciar thread de monitoramento IMEDIATAMENTE
                 thread = threading.Thread(
                     target=self._monitor_trade,
                     args=(signal.symbol,),
                     daemon=True
                 )
                 thread.start()
+                
+                print(f"   🔄 Monitoramento iniciado")
+            else:
+                print(f"   ❌ FALHA NA EXECUÇÃO")
+        
+        print(f"\n{'='*60}")
+        print(f"✅ RESUMO EXECUÇÃO: {executed_count}/{len(signals)} trades executados")
+        print(f"📊 Trades ativos: {len(self.active_trades)}")
+        
+        if executed_count > 0:
+            print(f"🚀 {executed_count} posições abertas e monitoradas!")
+        
+        return executed_count
     
     def _monitor_trade(self, symbol: str):
         """Monitora um trade específico"""
@@ -1124,10 +1393,10 @@ class TradingBot:
         # Monitoramento
         print(f"\n👀 MONITORAMENTO")
         print(f"{'='*50}")
-        print(f"🔄 Ciclo sem sinais: 5 minutos")
-        print(f"⚡ Ciclo com trades: 1 minuto")
+        print(f"🔄 Escaneamento contínuo: 30 segundos")
+        print(f"⚡ Execução de trades: IMEDIATA")
         print(f"📊 Update trades: 5 segundos")
-        print(f"📢 Relatório posições: 3 minutos")
+        print(f"📢 Relatório posições: A cada 5 ciclos")
         
         # API e segurança
         print(f"\n🔐 API E SEGURANÇA")
