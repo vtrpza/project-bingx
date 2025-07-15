@@ -49,149 +49,6 @@ load_dotenv()
 print(f"🚀 Robô de Trading BingX iniciado: {__file__}")
 
 # ============================
-# SISTEMA DE VISUALIZAÇÃO AVANÇADA
-# ============================
-
-class TradingDisplay:
-    """Sistema de visualização avançada para traders"""
-    
-    @staticmethod
-    def clear_screen():
-        """Limpa a tela"""
-        os.system('cls' if os.name == 'nt' else 'clear')
-    
-    @staticmethod
-    def print_header(title: str, width: int = 80):
-        """Imprime cabeçalho estilizado"""
-        print(f"\n{'='*width}")
-        print(f"{title:^{width}}")
-        print(f"{'='*width}")
-    
-    @staticmethod
-    def print_section(title: str, width: int = 60):
-        """Imprime seção estilizada"""
-        print(f"\n{title}")
-        print(f"{'-'*width}")
-    
-    @staticmethod
-    def format_price(price: float, decimals: int = 6) -> str:
-        """Formata preço com cores"""
-        return f"{price:.{decimals}f}"
-    
-    @staticmethod
-    def format_percentage(value: float, decimals: int = 2) -> str:
-        """Formata porcentagem com cores"""
-        color = "🟢" if value >= 0 else "🔴"
-        return f"{color} {value:+.{decimals}f}%"
-    
-    @staticmethod
-    def format_pnl(pnl: float, currency: str = "USDT") -> str:
-        """Formata PnL com cores"""
-        color = "💚" if pnl >= 0 else "❤️"
-        return f"{color} {pnl:+.2f} {currency}"
-    
-    @staticmethod
-    def print_signal_analysis(signal: TradingSignal):
-        """Imprime análise detalhada do sinal"""
-        symbol_clean = signal.symbol.replace('-USDT', '')
-        
-        print(f"\n╭{'─'*70}╮")
-        print(f"│{f'🎯 ANÁLISE DE SINAL - {symbol_clean}':^70}│")
-        print(f"├{'─'*70}┤")
-        
-        # Linha 1: Tipo e Confiança
-        signal_emoji = "📈" if signal.signal_type == "LONG" else "📉"
-        confidence_bar = "█" * int(signal.confidence * 10) + "░" * (10 - int(signal.confidence * 10))
-        print(f"│ {signal_emoji} Tipo: {signal.signal_type:<6} │ 📊 Confiança: {signal.confidence:.1%} [{confidence_bar}] │")
-        
-        # Linha 2: Preço e Timestamp
-        timestamp_str = signal.timestamp.strftime("%H:%M:%S")
-        print(f"│ 💰 Preço: {TradingDisplay.format_price(signal.price):<12} │ 🕒 Hora: {timestamp_str:<8} │")
-        
-        print(f"├{'─'*70}┤")
-        
-        # Indicadores técnicos
-        rsi_color = "🟡" if 30 < signal.indicators.rsi < 70 else "🔴" if signal.indicators.rsi > 70 else "🟢"
-        print(f"│ {rsi_color} RSI: {signal.indicators.rsi:>6.2f} │ 📈 SMA: {signal.indicators.sma:>12.6f} │")
-        print(f"│ 🎯 Pivot: {signal.indicators.pivot_center:>10.6f} │ 📏 Dist: {signal.indicators.distance_to_pivot:>8.2f}% │")
-        
-        print(f"├{'─'*70}┤")
-        
-        # Condições de entrada
-        cross_status = "✅" if signal.cross_detected else "❌"
-        distance_status = "✅" if signal.distance_ok else "❌"
-        rsi_status = "✅" if signal.rsi_favorable else "❌"
-        tf_status = "✅" if signal.timeframe_agreement else "❌"
-        
-        print(f"│ {cross_status} Cruzamento │ {distance_status} Distância≥2% │ {rsi_status} RSI Favorável │ {tf_status} TF 2h │")
-        
-        print(f"╰{'─'*70}╯")
-    
-    @staticmethod
-    def print_trade_dashboard(active_trades: dict, total_pnl: float = 0):
-        """Dashboard de trades ativos"""
-        if not active_trades:
-            print("\n📊 DASHBOARD - Nenhum trade ativo")
-            return
-        
-        TradingDisplay.print_header("📊 DASHBOARD DE TRADES ATIVOS", 80)
-        
-        print(f"┌{'─'*76}┐")
-        print(f"│{'SÍMBOLO':<12}│{'TIPO':<6}│{'ENTRADA':<12}│{'ATUAL':<12}│{'PNL':<10}│{'STATUS':<18}│")
-        print(f"├{'─'*76}┤")
-        
-        for symbol, trade_manager in active_trades.items():
-            status = trade_manager.get_status()
-            if status.get("active"):
-                symbol_short = symbol.replace('-USDT', '')
-                side_emoji = "📈" if status["side"] == "LONG" else "📉"
-                
-                # Status visual
-                if status["break_even_active"] and status["trailing_active"]:
-                    status_text = "🟢 BE+Trail"
-                elif status["break_even_active"]:
-                    status_text = "🟡 Break Even"
-                elif status["trailing_active"]:
-                    status_text = "🔵 Trailing"
-                else:
-                    status_text = "🔴 Inicial"
-                
-                pnl_formatted = TradingDisplay.format_pnl(status["pnl"])
-                
-                print(f"│{symbol_short:<12}│{side_emoji:<6}│{status['entry_price']:<12.6f}│{status['current_price']:<12.6f}│{pnl_formatted:<10}│{status_text:<18}│")
-        
-        print(f"└{'─'*76}┘")
-        
-        # Resumo
-        total_formatted = TradingDisplay.format_pnl(total_pnl)
-        print(f"\n💰 PnL Total: {total_formatted} │ 📊 Trades Ativos: {len(active_trades)}")
-    
-    @staticmethod
-    def print_performance_metrics(api_metrics: dict, scan_time: float = 0, symbols_scanned: int = 0):
-        """Métricas de performance do sistema"""
-        TradingDisplay.print_section("⚡ MÉTRICAS DE PERFORMANCE")
-        
-        print(f"📡 API Calls: {api_metrics['api_calls']} │ 🎯 Cache Hits: {api_metrics['cache_hits']} ({api_metrics['cache_hit_ratio']:.1f}%)")
-        print(f"⏱️ Tempo médio API: {api_metrics['avg_request_time']*1000:.0f}ms │ 🔍 Símbolos escaneados: {symbols_scanned}")
-        if scan_time > 0:
-            print(f"🚀 Tempo de scan: {scan_time:.1f}s │ ⚡ Velocidade: {symbols_scanned/scan_time:.1f} símbolos/s")
-    
-    @staticmethod
-    def print_market_summary(valid_symbols: int, invalid_symbols: int, signals_found: int):
-        """Resumo do mercado"""
-        total = valid_symbols + invalid_symbols
-        success_rate = (valid_symbols / max(1, total)) * 100
-        signal_rate = (signals_found / max(1, valid_symbols)) * 100
-        
-        print(f"\n📈 RESUMO DO MERCADO")
-        print(f"├─ ✅ Válidos: {valid_symbols} ({success_rate:.1f}%)")
-        print(f"├─ ❌ Inválidos: {invalid_symbols}")
-        print(f"├─ 🎯 Sinais: {signals_found} ({signal_rate:.1f}%)")
-        print(f"└─ 📊 Total: {total}")
-
-print(f"🎨 Sistema de visualização avançada carregado")
-
-# ============================
 # CONFIGURAÇÕES GLOBAIS
 # ============================
 
@@ -304,6 +161,154 @@ class Position:
     percentage: float
 
 # ============================
+# SISTEMA DE VISUALIZAÇÃO AVANÇADA
+# ============================
+
+class TradingDisplay:
+    """Sistema de visualização avançada para traders"""
+    
+    @staticmethod
+    def clear_screen():
+        """Limpa a tela"""
+        os.system('cls' if os.name == 'nt' else 'clear')
+    
+    @staticmethod
+    def print_header(title: str, width: int = 80):
+        """Imprime cabeçalho estilizado"""
+        print(f"\n{'='*width}")
+        print(f"{title:^{width}}")
+        print(f"{'='*width}")
+    
+    @staticmethod
+    def print_section(title: str, width: int = 60):
+        """Imprime seção estilizada"""
+        print(f"\n{title}")
+        print(f"{'-'*width}")
+    
+    @staticmethod
+    def format_price(price: float, decimals: int = 6) -> str:
+        """Formata preço com cores"""
+        return f"{price:.{decimals}f}"
+    
+    @staticmethod
+    def format_percentage(value: float, decimals: int = 2) -> str:
+        """Formata porcentagem com cores"""
+        color = "🟢" if value >= 0 else "🔴"
+        return f"{color} {value:+.{decimals}f}%"
+    
+    @staticmethod
+    def format_pnl(pnl: float, currency: str = "USDT") -> str:
+        """Formata PnL com cores"""
+        color = "💚" if pnl >= 0 else "❤️"
+        return f"{color} {pnl:+.2f} {currency}"
+    
+    @staticmethod
+    def print_signal_analysis(signal):
+        """Imprime análise detalhada do sinal"""
+        symbol_clean = signal.symbol.replace('-USDT', '')
+        
+        print(f"\n╭{'─'*70}╮")
+        print(f"│{f'🎯 ANÁLISE DE SINAL - {symbol_clean}':^70}│")
+        print(f"├{'─'*70}┤")
+        
+        # Linha 1: Tipo e Confiança
+        signal_emoji = "📈" if signal.signal_type == "LONG" else "📉"
+        confidence_bar = "█" * int(signal.confidence * 10) + "░" * (10 - int(signal.confidence * 10))
+        print(f"│ {signal_emoji} Tipo: {signal.signal_type:<6} │ 📊 Confiança: {signal.confidence:.1%} [{confidence_bar}] │")
+        
+        # Linha 2: Preço e Timestamp
+        timestamp_str = signal.timestamp.strftime("%H:%M:%S")
+        print(f"│ 💰 Preço: {TradingDisplay.format_price(signal.price):<12} │ 🕒 Hora: {timestamp_str:<8} │")
+        
+        print(f"├{'─'*70}┤")
+        
+        # Indicadores técnicos
+        rsi_color = "🟡" if 30 < signal.indicators.rsi < 70 else "🔴" if signal.indicators.rsi > 70 else "🟢"
+        print(f"│ {rsi_color} RSI: {signal.indicators.rsi:>6.2f} │ 📈 SMA: {signal.indicators.sma:>12.6f} │")
+        print(f"│ 🎯 Pivot: {signal.indicators.pivot_center:>10.6f} │ 📏 Dist: {signal.indicators.distance_to_pivot:>8.2f}% │")
+        
+        print(f"├{'─'*70}┤")
+        
+        # Condições de entrada
+        cross_status = "✅" if signal.cross_detected else "❌"
+        distance_status = "✅" if signal.distance_ok else "❌"
+        rsi_status = "✅" if signal.rsi_favorable else "❌"
+        tf_status = "✅" if signal.timeframe_agreement else "❌"
+        
+        print(f"│ {cross_status} Cruzamento │ {distance_status} Distância≥2% │ {rsi_status} RSI Favorável │ {tf_status} TF 2h │")
+        
+        print(f"╰{'─'*70}╯")
+    
+    @staticmethod
+    def print_trade_dashboard(active_trades: dict, total_pnl: float = 0):
+        """Dashboard de trades ativos"""
+        if not active_trades:
+            print("\n📊 DASHBOARD - Nenhum trade ativo")
+            return
+        
+        TradingDisplay.print_header("📊 DASHBOARD DE TRADES ATIVOS", 80)
+        
+        print(f"┌{'─'*76}┐")
+        print(f"│{'SÍMBOLO':<12}│{'TIPO':<6}│{'ENTRADA':<12}│{'ATUAL':<12}│{'PNL':<10}│{'STATUS':<18}│")
+        print(f"├{'─'*76}┤")
+        
+        for symbol, trade_manager in active_trades.items():
+            status = trade_manager.get_status()
+            if status.get("active"):
+                symbol_short = symbol.replace('-USDT', '')
+                side_emoji = "📈" if status["side"] == "LONG" else "📉"
+                
+                # Status visual
+                if status["break_even_active"] and status["trailing_active"]:
+                    status_text = "🟢 BE+Trail"
+                elif status["break_even_active"]:
+                    status_text = "🟡 Break Even"
+                elif status["trailing_active"]:
+                    status_text = "🔵 Trailing"
+                else:
+                    status_text = "🔴 Inicial"
+                
+                pnl_formatted = TradingDisplay.format_pnl(status["pnl"])
+                
+                print(f"│{symbol_short:<12}│{side_emoji:<6}│{status['entry_price']:<12.6f}│{status['current_price']:<12.6f}│{pnl_formatted:<10}│{status_text:<18}│")
+        
+        print(f"└{'─'*76}┘")
+        
+        # Resumo
+        total_formatted = TradingDisplay.format_pnl(total_pnl)
+        print(f"\n💰 PnL Total: {total_formatted} │ 📊 Trades Ativos: {len(active_trades)}")
+    
+    @staticmethod
+    def print_performance_metrics(api_metrics: dict, scan_time: float = 0, symbols_scanned: int = 0):
+        """Métricas de performance do sistema"""
+        TradingDisplay.print_section("⚡ MÉTRICAS DE PERFORMANCE")
+        
+        print(f"📡 API Calls: {api_metrics['api_calls']} │ 🎯 Cache Hits: {api_metrics['cache_hits']} ({api_metrics['cache_hit_ratio']:.1f}%)")
+        print(f"⏱️ Tempo médio API: {api_metrics['avg_request_time']*1000:.0f}ms │ 🔍 Símbolos escaneados: {symbols_scanned}")
+        
+        # Rate limiting info
+        if api_metrics.get('rate_limit_errors', 0) > 0:
+            print(f"🚦 Rate Limits: {api_metrics['rate_limit_errors']} │ ⏳ Delay atual: {api_metrics['current_delay']*1000:.0f}ms")
+        
+        if scan_time > 0:
+            print(f"🚀 Tempo de scan: {scan_time:.1f}s │ ⚡ Velocidade: {symbols_scanned/scan_time:.1f} símbolos/s")
+    
+    @staticmethod
+    def print_market_summary(valid_symbols: int, invalid_symbols: int, signals_found: int):
+        """Resumo do mercado"""
+        total = valid_symbols + invalid_symbols
+        success_rate = (valid_symbols / max(1, total)) * 100
+        signal_rate = (signals_found / max(1, valid_symbols)) * 100
+        
+        print(f"\n📈 RESUMO DO MERCADO")
+        print(f"├─ ✅ Válidos: {valid_symbols} ({success_rate:.1f}%)")
+        print(f"├─ ❌ Inválidos: {invalid_symbols}")
+        print(f"├─ 🎯 Sinais: {signals_found} ({signal_rate:.1f}%)")
+        print(f"└─ 📊 Total: {total}")
+
+print(f"🎨 Sistema de visualização avançada carregado")
+
+# ============================
 # CLIENTE API BINGX
 # ============================
 
@@ -327,13 +332,18 @@ class BingXAPI:
         self.price_cache = {}
         self.price_cache_ttl = {}
         
-        # Pool de threads para requests paralelos
-        self.executor = ThreadPoolExecutor(max_workers=10)
+        # Pool de threads para requests paralelos (reduzido para evitar rate limit)
+        self.executor = ThreadPoolExecutor(max_workers=5)
         
         # Métricas de performance
         self.api_calls_count = 0
         self.cache_hits = 0
         self.total_request_time = 0
+        
+        # Rate limiting inteligente
+        self.last_request_time = 0
+        self.rate_limit_delay = 0.2  # 200ms entre requests
+        self.rate_limit_errors = 0
         
     def _generate_signature(self, params: str) -> str:
         """Gera assinatura para autenticação"""
@@ -344,24 +354,51 @@ class BingXAPI:
         ).hexdigest()
     
     def _make_request(self, endpoint: str, params: dict = None, method: str = "GET") -> dict:
-        """Faz requisição para API com métricas"""
+        """Faz requisição para API com rate limiting inteligente"""
         if params is None:
             params = {}
             
+        # Rate limiting inteligente
+        current_time = time.time()
+        time_since_last = current_time - self.last_request_time
+        
+        if time_since_last < self.rate_limit_delay:
+            sleep_time = self.rate_limit_delay - time_since_last
+            time.sleep(sleep_time)
+        
         url = f"{self.base_url}{endpoint}"
         self.api_calls_count += 1
+        self.last_request_time = time.time()
         
         try:
             start_time = time.time()
             if method == "GET":
-                response = self.session.get(url, params=params, timeout=10)
+                response = self.session.get(url, params=params, timeout=15)
             else:
-                response = self.session.post(url, json=params, timeout=10)
+                response = self.session.post(url, json=params, timeout=15)
                 
             self.total_request_time += time.time() - start_time
             response.raise_for_status()
+            
+            # Reset delay se sucesso
+            if self.rate_limit_delay > 0.2:
+                self.rate_limit_delay = max(0.2, self.rate_limit_delay * 0.9)
+            
             return response.json()
             
+        except requests.exceptions.HTTPError as e:
+            if "429" in str(e):  # Rate limit
+                self.rate_limit_errors += 1
+                self.rate_limit_delay = min(2.0, self.rate_limit_delay * 1.5)
+                
+                print(f"🚦 Rate limit! Aumentando delay para {self.rate_limit_delay:.1f}s")
+                time.sleep(self.rate_limit_delay * 2)  # Pausa extra
+                
+                return {"code": -1, "msg": "Rate limit"}
+            else:
+                print(f"❌ Erro HTTP para {endpoint}: {e}")
+                return {"code": -1, "msg": str(e)}
+                
         except requests.exceptions.RequestException as e:
             print(f"❌ Erro na requisição para {endpoint}: {e}")
             return {"code": -1, "msg": str(e)}
@@ -435,8 +472,8 @@ class BingXAPI:
         numeric_cols = ["open", "high", "low", "close", "volume"]
         df[numeric_cols] = df[numeric_cols].astype(float)
         
-        # Converter para timezone local
-        df["timestamp"] = df["timestamp"].dt.tz_localize("UTC").dt.tz_convert("America/Sao_Paulo")
+        # Converter para timezone local (UTC+3)
+        df["timestamp"] = df["timestamp"].dt.tz_localize("UTC").dt.tz_convert("Etc/GMT-3")
         
         return df
     
@@ -476,7 +513,9 @@ class BingXAPI:
             "cache_hits": self.cache_hits,
             "cache_hit_ratio": self.cache_hits / max(1, self.api_calls_count) * 100,
             "avg_request_time": self.total_request_time / max(1, self.api_calls_count),
-            "total_request_time": self.total_request_time
+            "total_request_time": self.total_request_time,
+            "rate_limit_errors": self.rate_limit_errors,
+            "current_delay": self.rate_limit_delay
         }
     
     def place_order(self, order: Order) -> dict:
@@ -593,10 +632,7 @@ class TechnicalAnalysis:
         else:
             df["sma"] = np.nan
         
-        if len(df) >= 2:
-            df["mm1"] = df["close"].shift(1)
-        else:
-            df["mm1"] = np.nan
+        # MM1 é definido como SMA (média móvel) - já calculado acima
         
         if len(df) >= 3:
             df["center"] = (df["high"] + df["low"] + df["close"]) / 3
@@ -720,15 +756,18 @@ class SignalGenerator:
             slope_live = df_live["slope"].iloc[-1]
             
             # Obter valores dos timeframes (conforme projeto original)
-            mm1_live = df_live["mm1"].iloc[-1]  # MM1 = preço anterior
+            # MM1 = SMA (Média Móvel), não preço anterior
+            mm1_2h = df_2h["sma"].iloc[-1]  # MM1 do timeframe 2h = SMA
+            mm1_4h = df_4h["sma"].iloc[-1]  # MM1 do timeframe 4h = SMA
+            mm1_live = df_live["sma"].iloc[-1]  # MM1 atual = SMA
             center_2h = df_2h["center"].iloc[-1]  # Center do 2h
             center_4h = df_4h["center"].iloc[-1]  # Center do 4h
             sma_current = df_live["sma"].iloc[-1]
             center_current = df_live["center"].iloc[-1]
             
-            # Calcular distâncias corretas (MM1 para Centers dos timeframes)
-            dist_mm1_to_center_2h = abs(center_2h - mm1_live) / mm1_live * 100 if mm1_live > 0 else 0
-            dist_mm1_to_center_4h = abs(center_4h - mm1_live) / mm1_live * 100 if mm1_live > 0 else 0
+            # Calcular distâncias corretas (MM1/SMA para Centers dos timeframes)
+            dist_mm1_to_center_2h = abs(center_2h - mm1_2h) / mm1_2h * 100 if mm1_2h > 0 else 0
+            dist_mm1_to_center_4h = abs(center_4h - mm1_4h) / mm1_4h * 100 if mm1_4h > 0 else 0
             
             # Verificar condições de entrada - VERSÃO MELHORADA
             signal_type = "NEUTRAL"
@@ -739,15 +778,15 @@ class SignalGenerator:
             slope_ok = not np.isnan(slope_live) and slope_live >= 0  # Aceita slope 0
             
             # LÓGICA CORRIGIDA - Entrada no timeframe 4h
-            if rsi_ok and slope_ok and not np.isnan(center_4h) and not np.isnan(mm1_live):
+            if rsi_ok and slope_ok and not np.isnan(center_4h) and not np.isnan(mm1_4h):
                 
                 # Verificar cruzamento no timeframe 4h
-                mm1_4h_prev = df_4h["mm1"].iloc[-2] if len(df_4h) > 1 else mm1_live
+                mm1_4h_prev = df_4h["sma"].iloc[-2] if len(df_4h) > 1 else mm1_4h
                 center_4h_prev = df_4h["center"].iloc[-2] if len(df_4h) > 1 else center_4h
                 
-                # Detectar cruzamentos no 4h
-                long_cross_4h = (mm1_live > center_4h) and (mm1_4h_prev <= center_4h_prev)
-                short_cross_4h = (mm1_live < center_4h) and (mm1_4h_prev >= center_4h_prev)
+                # Detectar cruzamentos no 4h (SMA vs Center)
+                long_cross_4h = (mm1_4h > center_4h) and (mm1_4h_prev <= center_4h_prev)
+                short_cross_4h = (mm1_4h < center_4h) and (mm1_4h_prev >= center_4h_prev)
                 
                 # Verificar distância ≥ 2%
                 distance_4h_ok = dist_mm1_to_center_4h >= 2.0
@@ -756,8 +795,8 @@ class SignalGenerator:
                 # 1. MM1 cruza Center OU
                 # 2. Distância MM1 para Center ≥ 2%
                 
-                # LONG: MM1 acima da Center no 4h
-                if mm1_live > center_4h and (long_cross_4h or distance_4h_ok):
+                # LONG: MM1 (SMA) acima da Center no 4h
+                if mm1_4h > center_4h and (long_cross_4h or distance_4h_ok):
                     signal_type = "LONG"
                     confidence = 0.5  # Confiança base
                     
@@ -769,8 +808,8 @@ class SignalGenerator:
                     if rsi_live < 50:  # RSI favorável
                         confidence += 0.1
                     
-                # SHORT: MM1 abaixo da Center no 4h
-                elif mm1_live < center_4h and (short_cross_4h or distance_4h_ok):
+                # SHORT: MM1 (SMA) abaixo da Center no 4h
+                elif mm1_4h < center_4h and (short_cross_4h or distance_4h_ok):
                     signal_type = "SHORT"
                     confidence = 0.5  # Confiança base
                     
@@ -809,7 +848,7 @@ class SignalGenerator:
             return TradingSignal(
                 symbol=symbol,
                 signal_type=signal_type,
-                timestamp=datetime.datetime.now(pytz.timezone("America/Sao_Paulo")),
+                timestamp=datetime.datetime.now(pytz.timezone("Etc/GMT-3")),
                 price=current_price,
                 confidence=confidence,
                 indicators=indicators,
@@ -1050,10 +1089,10 @@ class AssetScanner:
         self.signals_found = 0
         
         print(f"🎯 Escaneando {len(symbols)} símbolos em paralelo...")
-        print(f"⚡ Threads: {min(10, len(symbols))}")
+        print(f"⚡ Threads: 3 (otimizado para rate limit)")
         
-        # Processamento paralelo com ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        # Processamento paralelo com ThreadPoolExecutor (reduzido para evitar rate limit)
+        with ThreadPoolExecutor(max_workers=3) as executor:
             # Submeter todas as tarefas
             future_to_symbol = {
                 executor.submit(self.scan_symbol_parallel, symbol): symbol 
@@ -1344,7 +1383,7 @@ class TradingBot:
         print(f"🎯 Modo de Operação: {'DEMO (Simulação)' if self.api.demo_mode else '🔴 REAL (Dinheiro real)'}")
         print(f"💰 Quantidade por Trade: {TradingConfig.QUANTIDADE_USDT} USDT")
         print(f"📈 Max Trades Simultâneos: {TradingConfig.MAX_TRADES_SIMULTANEOS}")
-        print(f"🕒 Timezone: America/Sao_Paulo (UTC-3)")
+        print(f"🕒 Timezone: UTC+3 (Etc/GMT-3)")
         print(f"🔗 Exchange: BingX (Mercado Futuro)")
         
         # Parâmetros de risco
