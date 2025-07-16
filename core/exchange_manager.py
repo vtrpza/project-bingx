@@ -12,6 +12,7 @@ import hmac
 import hashlib
 from typing import Dict, List, Optional, Any, Tuple
 import aiohttp
+from aiohttp import ClientSession, ContentTypeError
 import pandas as pd
 from dataclasses import dataclass
 from collections import deque
@@ -33,6 +34,9 @@ class RateLimitMetrics:
     current_delay: float = 0.1
     consecutive_successes: int = 0
     last_request_time: float = 0.0
+    circuit_breaker_open: bool = False
+    circuit_breaker_open_time: float = 0.0
+    consecutive_failures: int = 0
 
 
 class BingXExchangeManager:
@@ -43,6 +47,10 @@ class BingXExchangeManager:
         self.base_url = settings.bingx_base_url
         self.futures_path = settings.bingx_futures_path
         
+        # Initialize semaphore first to ensure it's always available
+        if not hasattr(self, 'semaphore'):
+            self.semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
+
         # Cache layers
         self._symbols_cache: Dict[str, Any] = {}
         self._price_cache: Dict[str, Tuple[float, float]] = {}  # (price, timestamp)
@@ -80,9 +88,9 @@ class BingXExchangeManager:
         )
         
         timeout = aiohttp.ClientTimeout(
-            total=settings.request_timeout,
-            connect=5,
-            sock_read=10
+            total=settings.request_timeout + 10,  # Increased total timeout
+            connect=10,  # Increased connect timeout
+            sock_read=20  # Increased read timeout for rate limiting
         )
         
         self.session = aiohttp.ClientSession(
@@ -178,26 +186,36 @@ class BingXExchangeManager:
                current_time - self.request_history[0]["timestamp"] > 60):
             self.request_history.popleft()
         
-        # Analisar taxa de erro recente
-        recent_errors = sum(1 for req in self.request_history if not req["success"])
+        # Check for recent rate limit errors (last 30 seconds)
+        recent_rate_limits = sum(1 for req in self.request_history 
+                                if req.get("is_rate_limit", False) and 
+                                current_time - req["timestamp"] < 30)
+        
+        # Analisar taxa de erro recente (excluding rate limits)
+        recent_errors = sum(1 for req in self.request_history 
+                           if not req["success"] and not req.get("is_rate_limit", False))
         error_rate = recent_errors / max(len(self.request_history), 1)
         
-        # Algoritmo adaptativo
-        base_delay = 0.1  # 100ms base
+        # Much more aggressive rate limiting
+        base_delay = 1.0  # Increased from 0.2 to 1.0 (1000ms base)
         
-        if error_rate > 0.1:  # > 10% erro
-            base_delay *= (1 + error_rate * 3)
-        elif self.rate_metrics.consecutive_successes > 20:
-            base_delay *= 0.7  # Reduz delay se muitos sucessos
+        # Ultra-aggressive backoff for recent rate limits
+        if recent_rate_limits > 0:
+            base_delay *= (5 + recent_rate_limits * 2)  # 5x+ multiplier for rate limits
+            logger.warning(f"Rate limit detected. Increased delay to {base_delay:.2f}s")
+        elif error_rate > 0.05:  # > 5% error rate
+            base_delay *= (1 + error_rate * 5)
+        elif self.rate_metrics.consecutive_successes > 10:
+            base_delay *= 0.9  # Very conservative reduction
         
-        # Controle de burst
+        # Ultra-conservative burst control
         recent_requests = [req for req in self.request_history 
-                          if current_time - req["timestamp"] < 1.0]
+                          if current_time - req["timestamp"] < 2.0]  # 2 second window
         
-        if len(recent_requests) >= settings.api_requests_per_second:
-            base_delay *= 2
+        if len(recent_requests) >= 1:  # Only 1 request per 2 seconds
+            base_delay *= 5  # Much higher multiplier
         
-        return max(0.05, min(2.0, base_delay))
+        return max(1.0, min(30.0, base_delay))  # Much higher min/max delays
     
     async def _make_request(self, endpoint: str, params: Dict = None, 
                            method: str = "GET") -> Dict[str, Any]:
@@ -207,6 +225,18 @@ class BingXExchangeManager:
         
         if params is None:
             params = {}
+        
+        # Circuit breaker check
+        current_time = time.time()
+        if self.rate_metrics.circuit_breaker_open:
+            # Check if circuit breaker should close (after 60 seconds)
+            if current_time - self.rate_metrics.circuit_breaker_open_time > 60:
+                self.rate_metrics.circuit_breaker_open = False
+                self.rate_metrics.consecutive_failures = 0
+                logger.info("Circuit breaker closed, resuming API calls")
+            else:
+                logger.warning("Circuit breaker is open, skipping API call")
+                return {"code": 503, "msg": "Circuit breaker is open"}
         
         # Rate limiting inteligente
         smart_delay = await self._calculate_smart_delay()
@@ -218,58 +248,131 @@ class BingXExchangeManager:
         url = f"{self.base_url}{endpoint}"
         start_time = time.time()
         
-        try:
-            self.api_calls_count += 1
-            self.rate_metrics.last_request_time = time.time()
-            
-            # Headers específicos da requisição
-            request_headers = self._get_base_headers()
-            
-            async with PerformanceTimer(logger, endpoint):
-                if method == "GET":
-                    async with self.session.get(url, params=params, 
-                                               headers=request_headers) as response:
-                        data = await response.json()
-                else:
-                    async with self.session.post(url, json=params, 
-                                                headers=request_headers) as response:
-                        data = await response.json()
-            
-            # Registrar sucesso
-            duration = time.time() - start_time
-            self._record_request(endpoint, duration, True)
-            self.rate_metrics.consecutive_successes += 1
-            
-            return data
-            
-        except Exception as e:
-            # Registrar erro
-            duration = time.time() - start_time
-            self._record_request(endpoint, duration, False)
-            self.rate_metrics.consecutive_successes = 0
-            
-            logger.log_error(e, context=f"API request to {endpoint}")
-            
-            return {"code": -1, "msg": str(e)}
+        async with self.semaphore:
+            try:
+                self.api_calls_count += 1
+                self.rate_metrics.last_request_time = time.time()
+                
+                # Headers específicos da requisição
+                request_headers = self._get_base_headers()
+                
+                async with PerformanceTimer(logger, endpoint):
+                    if method == "GET":
+                        async with self.session.get(url, params=params, headers=request_headers) as response:
+                            response.raise_for_status()
+                            content_type = response.headers.get('Content-Type', '')
+                            if 'application/json' not in content_type:
+                                response_text = await response.text()
+                                logger.error(
+                                    f"Unexpected content type: {content_type}. "
+                                    f"Response: {response_text}"
+                                )
+                                raise ContentTypeError(
+                                    f"Expected JSON, but received {content_type}. "
+                                    f"Response: {response_text}"
+                                )
+                            data = await response.json()
+                    elif method == "POST":
+                        async with self.session.post(url, json=params, headers=request_headers) as response:
+                            response.raise_for_status()
+                            content_type = response.headers.get('Content-Type', '')
+                            if 'application/json' not in content_type:
+                                response_text = await response.text()
+                                logger.error(
+                                    f"Unexpected content type: {content_type}. "
+                                    f"Response: {response_text}"
+                                )
+                                raise ContentTypeError(
+                                    f"Expected JSON, but received {content_type}. "
+                                    f"Response: {response_text}"
+                                )
+                            data = await response.json()
+                    else:
+                        raise ValueError(f"Unsupported HTTP method: {method}")
+                
+                # Registrar sucesso
+                duration = time.time() - start_time
+                self._record_request(endpoint, duration, True)
+                self.rate_metrics.consecutive_successes += 1
+                self.rate_metrics.consecutive_failures = 0  # Reset failure count
+                
+                return data
+                
+            except aiohttp.ClientResponseError as e:
+                duration = time.time() - start_time
+                
+                # Handle 429 Rate Limit errors specifically
+                if e.status == 429:
+                    logger.warning(f"Rate limit hit for {endpoint}. Implementing exponential backoff.")
+                    
+                    # Exponential backoff for 429 errors
+                    backoff_delay = min(60, 2 ** (self.rate_metrics.errors_count % 6))  # Max 60s
+                    await asyncio.sleep(backoff_delay)
+                    
+                    # Don't count 429 as regular failure - it's a rate limit
+                    self.rate_metrics.consecutive_successes = 0
+                    self.rate_metrics.errors_count += 1
+                    
+                    # Record but don't penalize success rate for rate limits
+                    self._record_request(endpoint, duration, False, is_rate_limit=True)
+                    
+                    return {"code": 429, "msg": f"Rate limit exceeded. Retrying after {backoff_delay}s"}
+                
+                # Handle other HTTP errors
+                self._record_request(endpoint, duration, False)
+                self.rate_metrics.consecutive_successes = 0
+                self.rate_metrics.consecutive_failures += 1
+                
+                # Open circuit breaker after 5 consecutive failures
+                if self.rate_metrics.consecutive_failures >= 5:
+                    self.rate_metrics.circuit_breaker_open = True
+                    self.rate_metrics.circuit_breaker_open_time = time.time()
+                    logger.error("Circuit breaker opened due to consecutive failures")
+                
+                logger.log_error(e, context=f"API request to {endpoint}")
+                return {"code": e.status, "msg": str(e)}
+                
+            except Exception as e:
+                # Handle non-HTTP errors
+                duration = time.time() - start_time
+                self._record_request(endpoint, duration, False)
+                self.rate_metrics.consecutive_successes = 0
+                self.rate_metrics.consecutive_failures += 1
+                
+                # Open circuit breaker after 5 consecutive failures
+                if self.rate_metrics.consecutive_failures >= 5:
+                    self.rate_metrics.circuit_breaker_open = True
+                    self.rate_metrics.circuit_breaker_open_time = time.time()
+                    logger.error("Circuit breaker opened due to consecutive failures")
+                
+                logger.log_error(e, context=f"API request to {endpoint}")
+                return {"code": -1, "msg": str(e)}
     
-    def _record_request(self, endpoint: str, duration: float, success: bool):
+    def _record_request(self, endpoint: str, duration: float, success: bool, is_rate_limit: bool = False):
         """Registra métricas da requisição"""
         self.request_history.append({
             "endpoint": endpoint,
             "timestamp": time.time(),
             "duration": duration,
-            "success": success
+            "success": success,
+            "is_rate_limit": is_rate_limit
         })
         
         # Atualizar métricas
         self.rate_metrics.requests_count += 1
         if not success:
-            self.rate_metrics.errors_count += 1
+            if is_rate_limit:
+                # Track rate limits separately - they shouldn't count as regular failures
+                logger.info(f"Rate limit recorded for {endpoint}")
+            else:
+                self.rate_metrics.errors_count += 1
         
-        # Calcular métricas agregadas
+        # Calcular métricas agregadas (exclude rate limits from success rate calculation)
         if len(self.request_history) > 0:
-            successes = sum(1 for req in self.request_history if req["success"])
-            self.rate_metrics.success_rate = (successes / len(self.request_history)) * 100
+            non_rate_limit_requests = [req for req in self.request_history if not req.get("is_rate_limit", False)]
+            if non_rate_limit_requests:
+                successes = sum(1 for req in non_rate_limit_requests if req["success"])
+                self.rate_metrics.success_rate = (successes / len(non_rate_limit_requests)) * 100
             
             total_duration = sum(req["duration"] for req in self.request_history)
             self.rate_metrics.avg_response_time = total_duration / len(self.request_history)

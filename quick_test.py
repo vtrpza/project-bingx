@@ -90,8 +90,6 @@ async def test_exchange_manager():
         from core.exchange_manager import BingXExchangeManager
         
         exchange_manager = BingXExchangeManager()
-        
-        # Test signature generation
         signature = exchange_manager._generate_signature("test_params")
         if not isinstance(signature, str):
             raise ValueError("Signature should be a string")

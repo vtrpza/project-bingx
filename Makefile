@@ -32,7 +32,7 @@ install-all: install install-test
 
 # Testing
 test:
-	pytest -v
+	pytest -v -rs
 
 test-unit:
 	pytest tests/unit/ -v --tb=short
@@ -41,7 +41,7 @@ test-integration:
 	pytest tests/integration/ -v --tb=short
 
 test-coverage:
-	pytest --cov=. --cov-report=html --cov-report=term-missing --cov-report=json
+	pytest --cov=. --cov-report=html --cov-report=term-missing --cov-report=xml
 
 test-parallel:
 	pytest -n auto --dist worksteal

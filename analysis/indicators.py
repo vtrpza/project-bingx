@@ -41,7 +41,7 @@ class TechnicalIndicators:
                 losses[i] = -delta
         
         # Calcular médias móveis
-        if n >= period:
+        if n > period:  # Changed from >= to > to ensure we have enough data
             # Primeira média (SMA)
             avg_gain = np.mean(gains[1:period+1])
             avg_loss = np.mean(losses[1:period+1])

@@ -5,6 +5,7 @@ PyTest Configuration and Fixtures
 Global test configuration and reusable fixtures for the trading bot test suite.
 """
 
+import pytest_asyncio
 import pytest
 import asyncio
 import json
@@ -14,8 +15,8 @@ from typing import Dict, List, Any
 import pandas as pd
 import numpy as np
 
-from fastapi.testclient import TestClient
-from httpx import AsyncClient
+from starlette.testclient import TestClient
+from httpx import AsyncClient, ASGITransport
 
 # Import application components
 from main import app
@@ -23,12 +24,26 @@ from config.settings import Settings
 from core.trading_engine import TradingEngine
 from core.exchange_manager import BingXExchangeManager
 from core.risk_manager import RiskManager
-from data.models import TradingSignal, Position, Order, OrderResult
+from api.trading_routes import get_trading_engine
+from data.models import (
+    TradingSignal, Position, Order, OrderResult, OrderSide, SignalType,
+    TradingStatusResponse, PortfolioMetrics, SystemHealth
+)
 from tests import TEST_CONFIG
 
 # ==========================================
 # PYTEST CONFIGURATION
 # ==========================================
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "unit: mark test as a unit test")
+    config.addinivalue_line("markers", "integration: mark test as an integration test")
+    config.addinivalue_line("markers", "api: API endpoint tests")
+    config.addinivalue_line("markers", "slow: Slow running tests")
+    config.addinivalue_line("markers", "external: Tests requiring external services")
+    config.addinivalue_line("markers", "trading: Trading engine tests")
+    config.addinivalue_line("markers", "risk: Risk management tests")
+    config.addinivalue_line("markers", "exchange: Exchange manager tests")
 
 @pytest.fixture(scope="session")
 def event_loop():
@@ -69,9 +84,49 @@ def test_settings():
 # ==========================================
 
 @pytest.fixture
-def client():
-    """FastAPI test client"""
-    return TestClient(app)
+async def client():
+    """FastAPI test client with mocked trading engine"""
+    
+    # Store original overrides
+    original_dependency_overrides = app.dependency_overrides.copy()
+
+    # Mock para o TradingEngine
+    mock_engine = MagicMock(spec=TradingEngine)
+    mock_engine.is_running = False
+    mock_engine.start = AsyncMock()
+    mock_engine.stop = AsyncMock()
+    mock_engine.get_status = AsyncMock(return_value=TradingStatusResponse(
+        is_running=False,
+        mode="demo",
+        active_positions=0,
+        total_pnl=0.0,
+        portfolio_metrics=PortfolioMetrics(total_value=10000, total_pnl=0, total_pnl_pct=0, active_positions=0, max_positions=10, portfolio_heat=0, max_drawdown=0, daily_trades=0, win_rate=0, profit_factor=0, sharpe_ratio=0),
+        system_health=SystemHealth(is_running=False, mode='demo', api_latency=100, api_success_rate=100, memory_usage_mb=100, cpu_usage_pct=10, uptime_hours=0, last_scan_time=datetime.now(), symbols_scanned=0, signals_generated=0, error_count_24h=0, last_error=None),
+        positions=[],
+        market_analysis=[]
+    ))
+    mock_engine.get_active_positions = AsyncMock(return_value=[])
+    mock_engine.close_position = AsyncMock(return_value=True)
+    mock_engine.close_all_positions = AsyncMock(return_value=0)
+    mock_engine.place_manual_order = AsyncMock(return_value=OrderResult(order_id="test", symbol="BTC-USDT", side=OrderSide.BUY, executed_qty=1, price=100, status="filled", timestamp=datetime.now()))
+    mock_engine.trigger_manual_scan = AsyncMock(return_value={})
+    mock_engine.get_recent_signals = AsyncMock(return_value=[])
+    mock_engine.get_performance_metrics = AsyncMock(return_value={})
+
+    # Injetar o mock no app
+    app.dependency_overrides[get_trading_engine] = lambda: mock_engine
+
+    with TestClient(app) as c:
+        yield c
+
+    # Restore original overrides after the test
+    app.dependency_overrides.clear()
+    app.dependency_overrides.update(original_dependency_overrides)
+
+    # Ensure trading engine is stopped after tests
+    if app.state.trading_engine:
+        await app.state.trading_engine.stop()
+        app.state.trading_engine = None
 
 @pytest.fixture
 async def async_client():
@@ -93,13 +148,20 @@ def mock_connection_manager():
     manager.disconnect = MagicMock()
     return manager
 
-@pytest.fixture
-async def trading_engine(test_settings, mock_connection_manager):
+@pytest_asyncio.fixture
+async def trading_engine(mock_connection_manager):
     """Trading engine with mocked dependencies"""
-    with patch('core.trading_engine.BingXExchangeManager') as mock_exchange:
-        mock_exchange.return_value = AsyncMock()
+    with patch('core.trading_engine.BingXExchangeManager') as mock_exchange_cls:
+        mock_exchange = AsyncMock()
+        mock_exchange_cls.return_value = mock_exchange
+        
         engine = TradingEngine(mock_connection_manager)
-        engine.exchange = mock_exchange.return_value
+        engine.exchange = mock_exchange
+        
+        # Mock other dependencies
+        engine.risk_manager = MagicMock()
+        engine.timeframe_manager = MagicMock()
+        
         yield engine
 
 @pytest.fixture
@@ -107,7 +169,19 @@ async def exchange_manager(test_settings):
     """Exchange manager with mocked HTTP client"""
     manager = BingXExchangeManager()
     manager.session = AsyncMock()
+    await manager.connect() # Ensure session is initialized
     yield manager
+    if manager.session:
+        await manager.session.close()
+
+@pytest_asyncio.fixture
+@pytest.mark.asyncio
+async def async_exchange_manager():
+    """Create exchange manager instance for async tests"""
+    manager = BingXExchangeManager()
+    yield manager
+    if manager.session:
+        await manager.session.close()
 
 @pytest.fixture
 def risk_manager():
@@ -145,7 +219,9 @@ def sample_trading_signal():
     """Sample trading signal"""
     return TradingSignal(
         symbol="BTC-USDT",
-        side="buy",
+        signal_type=SignalType.LONG,
+        price=45000.0,
+        side=OrderSide.BUY,
         confidence=0.75,
         entry_price=45000.0,
         stop_loss=44100.0,

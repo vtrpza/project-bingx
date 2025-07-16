@@ -219,6 +219,71 @@ async def trigger_scan(symbols: Optional[List[str]] = None,
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/scan")
+async def start_market_scan(engine = Depends(get_trading_engine)):
+    """
+    Inicia scan manual do mercado
+    """
+    try:
+        if engine.is_scanning:
+            return {"message": "Market scan already in progress", "status": "scanning"}
+        
+        # Start scan in background
+        asyncio.create_task(engine.scan_market())
+        
+        logger.info("market_scan_started_via_api")
+        return {"message": "Market scan started successfully", "status": "scanning"}
+        
+    except Exception as e:
+        logger.log_error(e, context="Starting market scan")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/emergency-stop")
+async def emergency_stop(engine = Depends(get_trading_engine)):
+    """
+    Parada de emergência - para trading e fecha todas as posições
+    """
+    try:
+        # Stop trading
+        await engine.stop()
+        
+        # Close all positions
+        closed_count = await engine.close_all_positions("emergency_stop")
+        
+        logger.warning("emergency_stop_via_api", positions_closed=closed_count)
+        return {
+            "message": "Emergency stop executed successfully",
+            "status": "stopped",
+            "positions_closed": closed_count
+        }
+        
+    except Exception as e:
+        logger.log_error(e, context="Emergency stop")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/positions/{symbol}")
+async def close_position_delete(symbol: str, engine = Depends(get_trading_engine)):
+    """
+    Fecha posição específica (DELETE method para dashboard)
+    """
+    try:
+        result = await engine.close_position(symbol, "manual_close")
+        
+        if not result:
+            raise HTTPException(status_code=404, detail=f"Position not found for {symbol}")
+        
+        logger.info("position_closed_via_delete", symbol=symbol)
+        return {"message": f"Position {symbol} closed successfully", "symbol": symbol}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.log_error(e, context=f"Closing position {symbol}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/performance")
 async def get_performance_metrics(engine = Depends(get_trading_engine)):
     """

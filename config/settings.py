@@ -185,7 +185,7 @@ class Settings(BaseSettings):
     
     # Concorrência
     max_concurrent_requests: int = Field(
-        default=10,
+        default=3,  # Reduced from 10 to prevent 429 errors
         ge=1,
         le=50,
         description="Requisições simultâneas máximas"
@@ -452,7 +452,7 @@ RISK_PROFILES = {
         "min_confidence": 0.8,
         "stop_loss_pct": 0.015,
         "max_portfolio_risk": 0.1,
-        "scan_interval_seconds": 60,
+        "scan_interval_seconds": 300,  # Increased from 120 to 300 (5 minutes)
     },
     RiskProfile.MODERATE: {
         "position_size_usd": 10.0,
@@ -460,7 +460,7 @@ RISK_PROFILES = {
         "min_confidence": 0.6,
         "stop_loss_pct": 0.02,
         "max_portfolio_risk": 0.2,
-        "scan_interval_seconds": 30,
+        "scan_interval_seconds": 240,  # Increased from 90 to 240 (4 minutes)
     },
     RiskProfile.AGGRESSIVE: {
         "position_size_usd": 25.0,
@@ -468,7 +468,7 @@ RISK_PROFILES = {
         "min_confidence": 0.4,
         "stop_loss_pct": 0.025,
         "max_portfolio_risk": 0.35,
-        "scan_interval_seconds": 15,
+        "scan_interval_seconds": 180,  # Increased from 60 to 180 (3 minutes)
     }
 }
 

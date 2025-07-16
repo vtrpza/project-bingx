@@ -25,13 +25,7 @@ from config.settings import Settings
 class TestBingXExchangeManager:
     """Test suite for BingXExchangeManager class"""
     
-    @pytest.fixture
-    async def exchange_manager(self):
-        """Create exchange manager instance"""
-        manager = BingXExchangeManager()
-        yield manager
-        if manager.session:
-            await manager.session.close()
+    
     
     @pytest.fixture
     def mock_response_data(self):
@@ -98,10 +92,11 @@ class TestBingXExchangeManager:
             assert headers["X-BX-CURRENCY"] == "USDT"
 
     @pytest.mark.unit
-    def test_generate_signature(self, exchange_manager):
+    @pytest.mark.asyncio
+    async def test_generate_signature(self, async_exchange_manager):
         """Test HMAC signature generation"""
         with patch('config.settings.settings.bingx_secret_key', 'test_secret'):
-            signature = exchange_manager._generate_signature("test_params")
+            signature = async_exchange_manager._generate_signature("test_params")
             assert signature is not None
             assert isinstance(signature, str)
             # Verify it's a valid hex string (64 chars for SHA256)
@@ -157,18 +152,19 @@ class TestBingXExchangeManager:
         assert "Network error" in result["msg"]
 
     @pytest.mark.unit
-    def test_record_request_metrics(self, exchange_manager):
+    @pytest.mark.asyncio
+    async def test_record_request_metrics(self, async_exchange_manager):
         """Test request metrics recording"""
-        initial_count = exchange_manager.rate_metrics.requests_count
-        initial_history_len = len(exchange_manager.request_history)
+        initial_count = async_exchange_manager.rate_metrics.requests_count
+        initial_history_len = len(async_exchange_manager.request_history)
         
-        exchange_manager._record_request("/test", 0.1, True)
+        async_exchange_manager._record_request("/test", 0.1, True)
         
-        assert exchange_manager.rate_metrics.requests_count == initial_count + 1
-        assert len(exchange_manager.request_history) == initial_history_len + 1
+        assert async_exchange_manager.rate_metrics.requests_count == initial_count + 1
+        assert len(async_exchange_manager.request_history) == initial_history_len + 1
         
         # Verify request history entry
-        last_request = exchange_manager.request_history[-1]
+        last_request = async_exchange_manager.request_history[-1]
         assert last_request["endpoint"] == "/test"
         assert last_request["duration"] == 0.1
         assert last_request["success"] is True
@@ -322,13 +318,14 @@ class TestBingXExchangeManager:
         assert positions[0].side == "LONG"
 
     @pytest.mark.unit
-    def test_get_performance_metrics(self, exchange_manager):
+    @pytest.mark.asyncio
+    async def test_get_performance_metrics(self, async_exchange_manager):
         """Test performance metrics retrieval"""
         # Add some test data
-        exchange_manager.api_calls_count = 100
-        exchange_manager.cache_hits = 30
+        async_exchange_manager.api_calls_count = 100
+        async_exchange_manager.cache_hits = 30
         
-        metrics = exchange_manager.get_performance_metrics()
+        metrics = async_exchange_manager.get_performance_metrics()
         
         assert metrics["api_calls"] == 100
         assert metrics["cache_hits"] == 30

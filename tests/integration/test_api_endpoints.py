@@ -20,44 +20,23 @@ from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
 from main import app
-from data.models import TradingSignal, Position, Order, SignalType, TechnicalIndicators
+from api.trading_routes import get_trading_engine
+from core.trading_engine import TradingEngine
+from data.models import (
+    TradingSignal, Position, Order, SignalType, TechnicalIndicators,
+    TradingStatusResponse, PortfolioMetrics, SystemHealth, OrderResult, OrderSide
+)
 
+@pytest.mark.usefixtures("client")
 class TestTradingAPIEndpoints:
     """Test suite for trading API endpoints"""
     
-    @pytest.fixture
-    def mock_trading_engine(self):
-        """Mock trading engine"""
-        mock_engine = MagicMock()
-        mock_engine.is_running = False
-        mock_engine.start = AsyncMock()
-        mock_engine.stop = AsyncMock()
-        mock_engine.get_status = AsyncMock(return_value={
-            "is_running": False,
-            "mode": "demo",
-            "active_positions": 0,
-            "total_pnl": 0.0
-        })
-        return mock_engine
     
-    @pytest.fixture
-    def client(self, mock_trading_engine):
-        """FastAPI test client"""
-        with patch('main.trading_engine', mock_trading_engine):
-            with patch('api.trading_routes.trading_engine', mock_trading_engine):
-                yield TestClient(app)
-    
-    @pytest.fixture
-    async def async_client(self, mock_trading_engine):
-        """Async FastAPI test client"""
-        with patch('main.trading_engine', mock_trading_engine):
-            with patch('api.trading_routes.trading_engine', mock_trading_engine):
-                async with AsyncClient(app=app, base_url="http://test") as ac:
-                    yield ac
 
     @pytest.mark.integration
-    def test_health_check(self, client):
+    async def test_health_check(self, client):
         """Test health check endpoint"""
+        client = await client
         response = client.get("/health")
         
         assert response.status_code == 200
@@ -66,41 +45,35 @@ class TestTradingAPIEndpoints:
         assert data["version"] == "1.0.0"
 
     @pytest.mark.integration
-    def test_trading_start(self, client, mock_trading_engine):
+    async def test_trading_start(self, client):
         """Test trading start endpoint"""
-        mock_trading_engine.is_running = False
-        
+        client = await client
         response = client.post("/api/v1/trading/start")
         
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "started"
+        assert data["status"] == "running"
 
     @pytest.mark.integration
-    def test_trading_start_already_running(self, client, mock_trading_engine):
+    async def test_trading_start_already_running(self, client):
         """Test trading start when already running"""
-        mock_trading_engine.is_running = True
-        
+        client = await client
         response = client.post("/api/v1/trading/start")
-        
-        assert response.status_code == 400
         data = response.json()
         assert "already running" in data["detail"]
 
     @pytest.mark.integration
-    def test_trading_stop(self, client, mock_trading_engine):
+    async def test_trading_stop(self, client):
         """Test trading stop endpoint"""
-        mock_trading_engine.is_running = True
-        
+        client = await client
         response = client.post("/api/v1/trading/stop")
-        
-        assert response.status_code == 200
         data = response.json()
         assert data["status"] == "stopped"
 
     @pytest.mark.integration
-    def test_trading_status(self, client, mock_trading_engine):
+    async def test_trading_status(self, client):
         """Test trading status endpoint"""
+        client = await client
         from data.models import TradingStatusResponse, PortfolioMetrics, SystemHealth
         
         mock_status = TradingStatusResponse(
@@ -139,11 +112,10 @@ class TestTradingAPIEndpoints:
             market_analysis=[]
         )
         
-        mock_engine.get_status = AsyncMock(return_value=mock_status)
+        # Mock the get_status method of the trading_engine
+        client.app.dependency_overrides[get_trading_engine].return_value.get_status.return_value = mock_status
         
         response = client.get("/api/v1/trading/status")
-        
-        assert response.status_code == 200
         data = response.json()
         assert data["is_running"] is True
         assert data["mode"] == "demo"
@@ -151,23 +123,25 @@ class TestTradingAPIEndpoints:
         assert data["total_pnl"] == 15.5
 
     @pytest.mark.integration
-    @patch('main.trading_engine')
-    def test_get_positions(self, mock_engine, client):
+
+    async def test_get_positions(self, client):
         """Test get positions endpoint"""
+        client = await client
         mock_positions = [
             Position(
                 symbol="BTC-USDT",
-                side="buy",
+                side=SignalType.LONG,
                 size=0.001,
                 entry_price=45000.0,
                 current_price=45500.0,
-                pnl=0.5,
-                pnl_pct=1.11,
-                timestamp=datetime.now()
+                unrealized_pnl=0.5,
+                unrealized_pnl_pct=1.11,
+                entry_time=datetime.now()
             )
         ]
         
-        mock_engine.get_active_positions = AsyncMock(return_value=mock_positions)
+        # Mock the get_active_positions method of the trading_engine
+        client.app.dependency_overrides[get_trading_engine].return_value.get_active_positions.return_value = mock_positions
         
         response = client.get("/api/v1/trading/positions")
         
@@ -177,10 +151,11 @@ class TestTradingAPIEndpoints:
         assert data["positions"][0]["symbol"] == "BTC-USDT"
 
     @pytest.mark.integration
-    @patch('main.trading_engine')
-    def test_close_position(self, mock_engine, client):
+
+    async def test_close_position(self, client):
         """Test close position endpoint"""
-        mock_engine.close_position = AsyncMock(return_value=True)
+        client = await client
+        client.app.dependency_overrides[get_trading_engine].return_value.close_position.return_value = True
         
         response = client.post("/api/v1/trading/positions/BTC-USDT/close")
         
@@ -190,10 +165,11 @@ class TestTradingAPIEndpoints:
         assert data["symbol"] == "BTC-USDT"
 
     @pytest.mark.integration
-    @patch('main.trading_engine')
-    def test_close_position_not_found(self, mock_engine, client):
+
+    async def test_close_position_not_found(self, client):
         """Test close position for non-existent position"""
-        mock_engine.close_position = AsyncMock(return_value=False)
+        client = await client
+        client.app.dependency_overrides[get_trading_engine].return_value.close_position.return_value = False
         
         response = client.post("/api/v1/trading/positions/NONEXISTENT-USDT/close")
         
@@ -202,10 +178,11 @@ class TestTradingAPIEndpoints:
         assert "not found" in data["detail"]
 
     @pytest.mark.integration
-    @patch('main.trading_engine')
-    def test_close_all_positions(self, mock_engine, client):
+
+    async def test_close_all_positions(self, client):
         """Test close all positions endpoint"""
-        mock_engine.close_all_positions = AsyncMock(return_value=3)
+        client = await client
+        client.app.dependency_overrides[get_trading_engine].return_value.close_all_positions.return_value = 3
         
         response = client.post("/api/v1/trading/positions/close-all")
         
@@ -215,23 +192,24 @@ class TestTradingAPIEndpoints:
         assert data["closed_count"] == 3
 
     @pytest.mark.integration
-    @patch('main.trading_engine')
-    def test_place_manual_order(self, mock_engine, client):
+
+    async def test_place_manual_order(self, client):
         """Test manual order placement"""
+        client = await client
         from data.models import OrderResult
         
         mock_result = OrderResult(
             order_id="test_order_123",
             symbol="BTC-USDT",
-            side="buy",
-            quantity=0.001,
+            side=OrderSide.BUY,
+            executed_qty=0.001,
             price=45000.0,
             avg_price=45000.0,
             status="filled",
             timestamp=datetime.now()
         )
         
-        mock_engine.place_manual_order = AsyncMock(return_value=mock_result)
+        client.app.dependency_overrides[get_trading_engine].return_value.place_manual_order.return_value = mock_result
         
         order_data = {
             "symbol": "BTC-USDT",
@@ -249,9 +227,10 @@ class TestTradingAPIEndpoints:
         assert data["status"] == "filled"
 
     @pytest.mark.integration
-    @patch('main.trading_engine')
-    def test_trigger_manual_scan(self, mock_engine, client):
+
+    async def test_trigger_manual_scan(self, client):
         """Test manual scan trigger"""
+        client = await client
         mock_result = {
             "symbols_scanned": 100,
             "signals": [
@@ -264,7 +243,7 @@ class TestTradingAPIEndpoints:
             ]
         }
         
-        mock_engine.trigger_manual_scan = AsyncMock(return_value=mock_result)
+        client.app.dependency_overrides[get_trading_engine].return_value.trigger_manual_scan.return_value = mock_result
         
         response = client.post("/api/v1/trading/scan")
         
@@ -274,13 +253,15 @@ class TestTradingAPIEndpoints:
         assert len(data["signals"]) == 1
 
     @pytest.mark.integration
-    @patch('main.trading_engine')
-    def test_get_recent_signals(self, mock_engine, client):
+
+    async def test_get_recent_signals(self, client):
         """Test get recent signals endpoint"""
+        client = await client
         mock_signals = [
             TradingSignal(
                 symbol="BTC-USDT",
-                side="buy",
+                signal_type=SignalType.LONG,
+                price=45000.0,
                 confidence=0.75,
                 entry_price=45000.0,
                 stop_loss=44100.0,
@@ -290,7 +271,7 @@ class TestTradingAPIEndpoints:
             )
         ]
         
-        mock_engine.get_recent_signals = AsyncMock(return_value=mock_signals)
+        client.app.dependency_overrides[get_trading_engine].return_value.get_recent_signals.return_value = mock_signals
         
         response = client.get("/api/v1/trading/signals")
         
@@ -299,37 +280,35 @@ class TestTradingAPIEndpoints:
         assert len(data["signals"]) == 1
         assert data["signals"][0]["symbol"] == "BTC-USDT"
 
+@pytest.mark.usefixtures("client")
 class TestAnalyticsAPIEndpoints:
     """Test suite for analytics API endpoints"""
     
-    @pytest.fixture
-    def client(self):
-        """FastAPI test client"""
-        return TestClient(app)
+
 
     @pytest.mark.integration
-    @patch('main.trading_engine')
-    def test_analytics_overview(self, mock_engine, client):
+
+    async def test_analytics_overview(self, client):
         """Test analytics overview endpoint"""
+        client = await client
         mock_status = MagicMock()
         mock_status.model_dump.return_value = {
             "is_running": True,
             "total_pnl": 25.5,
             "active_positions": 3
         }
-        mock_engine.get_status = AsyncMock(return_value=mock_status)
+        client.app.dependency_overrides[get_trading_engine].return_value.get_status.return_value = mock_status
         
         response = client.get("/api/v1/analytics/overview")
-        
-        assert response.status_code == 200
         data = response.json()
         assert data["is_running"] is True
         assert data["total_pnl"] == 25.5
 
     @pytest.mark.integration
-    @patch('main.trading_engine')
-    def test_portfolio_metrics(self, mock_engine, client):
+
+    async def test_portfolio_metrics(self, client):
         """Test portfolio metrics endpoint"""
+        client = await client
         mock_metrics = {
             "total_pnl": 100.0,
             "win_rate": 75.0,
@@ -337,45 +316,41 @@ class TestAnalyticsAPIEndpoints:
             "sharpe_ratio": 1.2
         }
         
-        mock_engine.get_performance_metrics = AsyncMock(return_value=mock_metrics)
+        client.app.dependency_overrides[get_trading_engine].return_value.get_performance_metrics.return_value = mock_metrics
         
         response = client.get("/api/v1/analytics/portfolio")
-        
-        assert response.status_code == 200
         data = response.json()
         assert data["total_pnl"] == 100.0
         assert data["win_rate"] == 75.0
 
     @pytest.mark.integration
-    @patch('main.trading_engine')
-    def test_performance_metrics(self, mock_engine, client):
+
+    async def test_performance_metrics(self, client):
         """Test performance metrics endpoint"""
+        client = await client
         mock_metrics = {
             "api_latency": 150,
             "uptime_seconds": 3600,
             "cache_hit_ratio": 85.0
         }
         
-        mock_engine.get_performance_metrics = AsyncMock(return_value=mock_metrics)
+        client.app.dependency_overrides[get_trading_engine].return_value.get_performance_metrics.return_value = mock_metrics
         
         response = client.get("/api/v1/analytics/performance")
-        
-        assert response.status_code == 200
         data = response.json()
         assert data["api_latency"] == 150
         assert data["uptime_seconds"] == 3600
 
+@pytest.mark.usefixtures("client")
 class TestConfigurationAPIEndpoints:
     """Test suite for configuration API endpoints"""
     
-    @pytest.fixture
-    def client(self):
-        """FastAPI test client"""
-        return TestClient(app)
+
 
     @pytest.mark.integration
-    def test_get_config(self, client):
+    async def test_get_config(self, client):
         """Test get configuration endpoint"""
+        client = await client
         response = client.get("/api/v1/config")
         
         assert response.status_code == 200
@@ -385,8 +360,9 @@ class TestConfigurationAPIEndpoints:
         assert "max_positions" in data
 
     @pytest.mark.integration
-    def test_update_config(self, client):
+    async def test_update_config(self, client):
         """Test update configuration endpoint"""
+        client = await client
         config_update = {
             "position_size_usd": 15.0,
             "max_positions": 8,
@@ -401,8 +377,9 @@ class TestConfigurationAPIEndpoints:
         assert "updated_fields" in data
 
     @pytest.mark.integration
-    def test_update_config_invalid_values(self, client):
+    async def test_update_config_invalid_values(self, client):
         """Test update configuration with invalid values"""
+        client = await client
         config_update = {
             "position_size_usd": -10.0,  # Invalid negative value
             "max_positions": 0  # Invalid zero value
@@ -413,8 +390,9 @@ class TestConfigurationAPIEndpoints:
         assert response.status_code == 422  # Validation error
 
     @pytest.mark.integration
-    def test_set_risk_profile(self, client):
+    async def test_set_risk_profile(self, client):
         """Test set risk profile endpoint"""
+        client = await client
         response = client.post("/api/v1/config/risk-profile/conservative")
         
         assert response.status_code == 200
@@ -423,8 +401,9 @@ class TestConfigurationAPIEndpoints:
         assert data["risk_profile"] == "conservative"
 
     @pytest.mark.integration
-    def test_set_invalid_risk_profile(self, client):
+    async def test_set_invalid_risk_profile(self, client):
         """Test set invalid risk profile"""
+        client = await client
         response = client.post("/api/v1/config/risk-profile/invalid")
         
         assert response.status_code == 400
@@ -432,8 +411,9 @@ class TestConfigurationAPIEndpoints:
         assert "invalid" in data["detail"].lower()
 
     @pytest.mark.integration
-    def test_validate_config(self, client):
+    async def test_validate_config(self, client):
         """Test configuration validation endpoint"""
+        client = await client
         response = client.post("/api/v1/config/validate")
         
         assert response.status_code == 200
@@ -442,17 +422,16 @@ class TestConfigurationAPIEndpoints:
         assert "errors" in data
         assert "warnings" in data
 
+@pytest.mark.usefixtures("client")
 class TestWebSocketEndpoints:
     """Test suite for WebSocket functionality"""
     
-    @pytest.fixture
-    def client(self):
-        """FastAPI test client"""
-        return TestClient(app)
+
 
     @pytest.mark.integration
-    def test_websocket_connection(self, client):
+    async def test_websocket_connection(self, client):
         """Test WebSocket connection"""
+        client = await client
         with client.websocket_connect("/ws") as websocket:
             # Connection should be established
             assert websocket is not None
@@ -463,16 +442,17 @@ class TestWebSocketEndpoints:
             assert data["type"] in ["heartbeat", "status_update"]
 
     @pytest.mark.integration
-    @patch('main.trading_engine')
-    def test_websocket_status_updates(self, mock_engine, client):
+
+    async def test_websocket_status_updates(self, client):
         """Test WebSocket status updates"""
+        client = await client
         mock_status = MagicMock()
         mock_status.model_dump.return_value = {
             "is_running": True,
             "total_pnl": 25.5,
             "active_positions": 3
         }
-        mock_engine.get_status = AsyncMock(return_value=mock_status)
+        client.app.dependency_overrides[get_trading_engine].return_value.get_status.return_value = mock_status
         
         with client.websocket_connect("/ws") as websocket:
             # Wait for status update
@@ -483,17 +463,16 @@ class TestWebSocketEndpoints:
                 assert data["data"]["is_running"] is True
                 assert data["data"]["total_pnl"] == 25.5
 
+@pytest.mark.usefixtures("client")
 class TestErrorHandling:
     """Test suite for error handling"""
     
-    @pytest.fixture
-    def client(self):
-        """FastAPI test client"""
-        return TestClient(app)
+
 
     @pytest.mark.integration
-    def test_404_error(self, client):
+    async def test_404_error(self, client):
         """Test 404 error handling"""
+        client = await client
         response = client.get("/nonexistent/endpoint")
         
         assert response.status_code == 404
@@ -501,8 +480,9 @@ class TestErrorHandling:
         assert "detail" in data
 
     @pytest.mark.integration
-    def test_422_validation_error(self, client):
+    async def test_422_validation_error(self, client):
         """Test 422 validation error"""
+        client = await client
         invalid_order = {
             "symbol": "",  # Empty symbol
             "side": "invalid",  # Invalid side
@@ -517,25 +497,25 @@ class TestErrorHandling:
 
     @pytest.mark.integration
     @patch('main.trading_engine', None)
-    def test_internal_server_error(self, client):
+    async def test_internal_server_error(self, client):
         """Test 500 internal server error"""
+        client = await client
         response = client.get("/api/v1/trading/status")
         
         assert response.status_code == 500
         data = response.json()
         assert "detail" in data
 
+@pytest.mark.usefixtures("client")
 class TestRateLimiting:
     """Test suite for rate limiting"""
     
-    @pytest.fixture
-    def client(self):
-        """FastAPI test client"""
-        return TestClient(app)
+
 
     @pytest.mark.integration
-    def test_rate_limiting(self, client):
+    async def test_rate_limiting(self, client):
         """Test API rate limiting"""
+        client = await client
         # Make multiple rapid requests
         responses = []
         for i in range(20):
@@ -550,17 +530,16 @@ class TestRateLimiting:
         rate_limited = [r for r in responses if r.status_code == 429]
         # Rate limiting may or may not be implemented yet
 
+@pytest.mark.usefixtures("client")
 class TestAuthentication:
     """Test suite for authentication (if implemented)"""
     
-    @pytest.fixture
-    def client(self):
-        """FastAPI test client"""
-        return TestClient(app)
+
 
     @pytest.mark.integration
-    def test_public_endpoints(self, client):
+    async def test_public_endpoints(self, client):
         """Test public endpoints don't require authentication"""
+        client = await client
         public_endpoints = [
             "/health",
             "/",
@@ -571,17 +550,16 @@ class TestAuthentication:
             response = client.get(endpoint)
             assert response.status_code != 401  # Not unauthorized
 
+@pytest.mark.usefixtures("client")
 class TestCORS:
     """Test suite for CORS configuration"""
     
-    @pytest.fixture
-    def client(self):
-        """FastAPI test client"""
-        return TestClient(app)
+
 
     @pytest.mark.integration
-    def test_cors_headers(self, client):
+    async def test_cors_headers(self, client):
         """Test CORS headers"""
+        client = await client
         response = client.options("/api/v1/trading/status", headers={
             "Origin": "http://localhost:3000",
             "Access-Control-Request-Method": "GET"

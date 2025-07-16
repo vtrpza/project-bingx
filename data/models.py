@@ -155,8 +155,10 @@ class OrderResult(BaseModel):
     """Resultado da execução de ordem"""
     order_id: str = Field(..., description="ID da ordem")
     symbol: str = Field(..., description="Par de trading")
+    side: OrderSide
     status: str = Field(..., description="Status da ordem")
     executed_qty: float = Field(ge=0, description="Quantidade executada")
+    price: Optional[float] = Field(None, gt=0, description="Preço (para limit orders)")
     avg_price: Optional[float] = Field(None, description="Preço médio de execução")
     commission: Optional[float] = Field(None, description="Comissão")
     timestamp: datetime = Field(default_factory=datetime.now)

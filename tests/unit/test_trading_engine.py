@@ -24,21 +24,7 @@ from config.settings import Settings
 class TestTradingEngine:
     """Test suite for TradingEngine class"""
     
-    @pytest.fixture
-    async def trading_engine(self, mock_connection_manager):
-        """Create trading engine with mocked dependencies"""
-        with patch('core.trading_engine.BingXExchangeManager') as mock_exchange_cls:
-            mock_exchange = AsyncMock()
-            mock_exchange_cls.return_value = mock_exchange
-            
-            engine = TradingEngine(mock_connection_manager)
-            engine.exchange = mock_exchange
-            
-            # Mock other dependencies
-            engine.risk_manager = MagicMock()
-            engine.timeframe_manager = MagicMock()
-            
-            yield engine
+    
     
     @pytest.fixture
     def sample_klines(self):
@@ -251,7 +237,8 @@ class TestTradingEngine:
         assert signal is None
 
     @pytest.mark.unit
-    def test_calculate_signal_confidence(self, trading_engine):
+    @pytest.mark.asyncio
+    async def test_calculate_signal_confidence(self, trading_engine):
         """Test signal confidence calculation"""
         conditions_2h = {
             "rsi_ok": True,

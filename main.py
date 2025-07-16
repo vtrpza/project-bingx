@@ -26,6 +26,7 @@ from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 import structlog
 
 from config.settings import settings
@@ -34,6 +35,17 @@ from api.trading_routes import router as trading_router, register_trading_engine
 from api.analytics_routes import router as analytics_router
 from api.config_routes import router as config_router
 from utils.logger import setup_logging
+
+def serialize_datetime(obj):
+    """Convert datetime objects to ISO format strings for JSON serialization"""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    elif isinstance(obj, dict):
+        return {k: serialize_datetime(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [serialize_datetime(item) for item in obj]
+    else:
+        return obj
 
 # Configure structured logging
 setup_logging()
@@ -99,7 +111,9 @@ class ConnectionManager:
     async def _send_to_connection(self, websocket: WebSocket, data: dict):
         """Send data to a specific connection with error handling"""
         try:
-            await websocket.send_json(data)
+            # Serialize datetime objects before sending
+            serialized_data = serialize_datetime(data)
+            await websocket.send_json(serialized_data)
             if websocket in self.connection_metadata:
                 self.connection_metadata[websocket]["messages_sent"] += 1
             return True
@@ -167,8 +181,10 @@ class ConnectionManager:
         
         # Remove stale connections
         for connection in stale_connections:
+            last_heartbeat = self.last_heartbeat.get(connection, 0)
+            stale_duration = current_time - last_heartbeat
             logger.warning("removing_stale_connection", 
-                          stale_duration=current_time - self.last_heartbeat.get(connection, 0))
+                          stale_duration=f"{stale_duration:.2f}s")
             self.disconnect(connection)
     
     def get_connection_stats(self) -> dict:
@@ -257,6 +273,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 # Include routers
 app.include_router(trading_router, prefix="/api/v1/trading", tags=["Trading"])
 app.include_router(analytics_router, prefix="/api/v1/analytics", tags=["Analytics"])
@@ -278,11 +297,18 @@ async def status_broadcaster():
                 
                 # Add WebSocket connection stats to the status
                 ws_stats = connection_manager.get_connection_stats()
+                
+                # Convert status to dict and handle datetime serialization
+                status_dict = status.model_dump()
+                
                 data_to_send = {
                     "type": "status_update",
-                    "data": status.model_dump(mode='json'),
+                    "data": serialize_datetime(status_dict),
                     "websocket_stats": ws_stats
                 }
+                
+                # Serialize the entire data_to_send object
+                data_to_send = serialize_datetime(data_to_send)
                 
                 await connection_manager.broadcast(data_to_send)
                 logger.info("status_broadcast_sent", 
@@ -322,7 +348,17 @@ async def heartbeat_manager():
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    """Dashboard HTML aprimorado para monitoramento"""
+    """Professional trader dashboard with advanced features"""
+    from pathlib import Path
+    
+    # Read the new trader dashboard template
+    template_path = Path(__file__).parent / "templates" / "trader_dashboard.html"
+    
+    if template_path.exists():
+        with open(template_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    
+    # Fallback to basic dashboard if template not found
     return """
     <!DOCTYPE html>
     <html>
@@ -706,7 +742,7 @@ async def health_check():
     status = "healthy"
     if trading_engine:
         engine_status = await trading_engine.get_status()
-        status = "healthy" if engine_status.get("is_running") else "degraded"
+        status = "healthy" if engine_status.is_running else "degraded"
     
     return {
         "status": status,
