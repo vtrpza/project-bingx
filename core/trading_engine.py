@@ -164,7 +164,7 @@ class TradingEngine:
                 await asyncio.sleep(10)  # Esperar antes de tentar novamente
     
     async def _scan_market_opportunities(self):
-        """Escaneia oportunidades de trading"""
+        """Escaneia oportunidades de trading com paralelização inteligente"""
         if self.is_scanning:
             return
         
@@ -172,48 +172,49 @@ class TradingEngine:
         scan_start = time.time()
         
         try:
-            # Lista de símbolos para escanear
-            symbols = await self._get_tradeable_symbols()
+            # Lista de TODOS os símbolos BingX Futures (~550)
+            all_symbols = await self._get_all_bingx_symbols()
+            valid_symbols = await self._filter_valid_symbols(all_symbols)
             
-            signals_found = []
+            logger.info("parallel_scan_started", 
+                       total_symbols=len(all_symbols),
+                       valid_symbols=len(valid_symbols))
             
-            for symbol in symbols:
-                try:
+            # Paralelizar análise de símbolos
+            signals_found = await self._parallel_symbol_analysis(valid_symbols)
+            
+            # Processar sinais encontrados
+            executed_signals = []
+            for signal in signals_found:
+                if signal.confidence >= settings.min_confidence:
                     # Verificar se já temos posição neste símbolo
-                    if symbol in self.active_positions:
+                    if signal.symbol in self.active_positions:
                         continue
                     
                     # Verificar se atingimos limite de posições
                     if len(self.active_positions) >= settings.max_positions:
                         break
                     
-                    # Analisar oportunidade
-                    signal = await self._analyze_symbol(symbol)
-                    
-                    if signal and signal.confidence >= settings.min_confidence:
-                        signals_found.append(signal)
-                        
-                        # Executar trade se sinal forte o suficiente e validado pelo risk manager
-                        if signal.confidence >= 0.7:  # Threshold para execução automática
-                            # Validar com risk manager antes de executar
-                            allowed, reason = await self.risk_manager.validate_new_position(signal, self.active_positions)
-                            if allowed:
-                                await self._execute_signal(signal)
-                            else:
-                                logger.info("signal_rejected_by_risk_manager", 
-                                           symbol=signal.symbol, reason=reason)
-                
-                except Exception as e:
-                    logger.log_error(e, context=f"Analyzing symbol {symbol}")
-                    continue
+                    # Executar trade se sinal forte o suficiente e validado pelo risk manager
+                    if signal.confidence >= 0.7:  # Threshold para execução automática
+                        # Validar com risk manager antes de executar
+                        allowed, reason = await self.risk_manager.validate_new_position(signal, self.active_positions)
+                        if allowed:
+                            result = await self._execute_signal(signal)
+                            if result:
+                                executed_signals.append(signal)
+                        else:
+                            logger.info("signal_rejected_by_risk_manager", 
+                                       symbol=signal.symbol, reason=reason)
             
             # Atualizar métricas
             scan_duration = time.time() - scan_start
             self.last_scan_time = datetime.now()
             
-            logger.info("market_scan_completed",
-                       symbols_scanned=len(symbols),
+            logger.info("parallel_scan_completed",
+                       symbols_scanned=len(valid_symbols),
                        signals_found=len(signals_found),
+                       signals_executed=len(executed_signals),
                        scan_duration=scan_duration)
             
             # Manter histórico de sinais
@@ -224,8 +225,124 @@ class TradingEngine:
         finally:
             self.is_scanning = False
     
+    async def _get_all_bingx_symbols(self) -> List[str]:
+        """Obtém TODOS os símbolos BingX Futures (~550)"""
+        try:
+            # Cache para evitar requests desnecessários
+            cache_key = "all_bingx_symbols"
+            if (cache_key in self._market_data_cache and 
+                time.time() - self._cache_timestamp.get(cache_key, 0) < 1800):  # 30 min
+                return self._market_data_cache[cache_key]
+            
+            # Usar método específico do exchange para obter todos os símbolos
+            all_symbols = await self.exchange.get_futures_symbols()
+            
+            # Filtrar apenas símbolos USDT (não VST para ter maior alcance)
+            currency_suffix = "-USDT"
+            filtered_symbols = [
+                symbol for symbol in all_symbols
+                if symbol.endswith(currency_suffix)
+            ]
+            
+            # Cache resultado
+            self._market_data_cache[cache_key] = filtered_symbols
+            self._cache_timestamp[cache_key] = time.time()
+            
+            logger.info("all_symbols_fetched", 
+                       total_symbols=len(all_symbols),
+                       usdt_symbols=len(filtered_symbols))
+            
+            return filtered_symbols
+            
+        except Exception as e:
+            logger.log_error(e, context="Getting all BingX symbols")
+            return settings.allowed_symbols  # Fallback para símbolos configurados
+
+    async def _filter_valid_symbols(self, symbols: List[str]) -> List[str]:
+        """Filtra símbolos válidos removendo delistados/inválidos"""
+        valid_symbols = []
+        invalid_symbols = []
+        
+        # Criar batches para processamento paralelo
+        batch_size = 50
+        symbol_batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+        
+        for batch in symbol_batches:
+            batch_tasks = []
+            for symbol in batch:
+                batch_tasks.append(self._validate_symbol(symbol))
+            
+            # Processar batch em paralelo
+            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+            
+            for symbol, is_valid in zip(batch, batch_results):
+                if isinstance(is_valid, Exception):
+                    invalid_symbols.append(symbol)
+                    logger.warning("symbol_validation_error", symbol=symbol, error=str(is_valid))
+                elif is_valid:
+                    valid_symbols.append(symbol)
+                else:
+                    invalid_symbols.append(symbol)
+        
+        logger.info("symbol_validation_completed",
+                   total_symbols=len(symbols),
+                   valid_symbols=len(valid_symbols),
+                   invalid_symbols=len(invalid_symbols))
+        
+        return valid_symbols
+
+    async def _validate_symbol(self, symbol: str) -> bool:
+        """Valida se um símbolo está ativo e tradeable"""
+        try:
+            # Verificar informações do símbolo
+            symbol_info = await self.exchange.get_symbol_info(symbol)
+            if not symbol_info or symbol_info.get("status") != "TRADING":
+                return False
+            
+            # Tentar obter ticker para confirmar que está ativo
+            ticker = await self.exchange.get_ticker(symbol)
+            if not ticker or float(ticker.get("price", 0)) <= 0:
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.log_error(e, context=f"Validating symbol {symbol}")
+            return False
+
+    async def _parallel_symbol_analysis(self, symbols: List[str]) -> List[TradingSignal]:
+        """Analisa símbolos em paralelo com controle de concorrência"""
+        signals = []
+        
+        # Controle de concorrência para não sobrecarregar API
+        semaphore = asyncio.Semaphore(10)  # Max 10 análises simultâneas
+        
+        async def analyze_with_semaphore(symbol: str):
+            async with semaphore:
+                return await self._analyze_symbol(symbol)
+        
+        # Criar tarefas para análise paralela
+        analysis_tasks = []
+        for symbol in symbols:
+            task = analyze_with_semaphore(symbol)
+            analysis_tasks.append(task)
+        
+        # Executar análises em paralelo
+        results = await asyncio.gather(*analysis_tasks, return_exceptions=True)
+        
+        # Processar resultados
+        for symbol, result in zip(symbols, results):
+            if isinstance(result, Exception):
+                logger.log_error(result, context=f"Parallel analysis error for {symbol}")
+                continue
+            
+            if result and isinstance(result, TradingSignal):
+                signals.append(result)
+        
+        return signals
+
     async def _get_tradeable_symbols(self) -> List[str]:
-        """Obtém lista de símbolos tradeable"""
+        """Obtém lista de símbolos tradeable (para compatibilidade)"""
         try:
             # Cache para evitar requests desnecessários
             cache_key = "tradeable_symbols"

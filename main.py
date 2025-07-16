@@ -19,8 +19,10 @@ Data: 2025-01-16
 """
 
 import asyncio
+import time
 import uvicorn
 from contextlib import asynccontextmanager
+from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -39,49 +41,165 @@ logger = structlog.get_logger()
 
 
 class ConnectionManager:
-    """Gerenciador de conexões WebSocket para dashboard em tempo real"""
+    """Gerenciador de conexões WebSocket enterprise com heartbeat e recovery"""
     
     def __init__(self):
         self.active_connections: list[WebSocket] = []
-    
+        self.connection_metadata: dict[WebSocket, dict] = {}
+        self.heartbeat_interval = 30  # seconds
+        self.last_heartbeat = {}
+        
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
-        logger.info("websocket_connected", connections=len(self.active_connections))
+        self.connection_metadata[websocket] = {
+            "connected_at": time.time(),
+            "last_heartbeat": time.time(),
+            "messages_sent": 0,
+            "errors": 0
+        }
+        
+        logger.info("websocket_connected", 
+                   connections=len(self.active_connections),
+                   client_ip=websocket.client.host if websocket.client else "unknown")
         
         # Send immediate status update to new connection
         if trading_engine:
             try:
                 status = await trading_engine.get_status()
-                await websocket.send_json({
+                await self._send_to_connection(websocket, {
                     "type": "status_update",
                     "data": status.model_dump(mode='json')
                 })
                 logger.info("initial_status_sent_to_new_connection")
             except Exception as e:
                 logger.error("failed_to_send_initial_status", error=str(e))
+        
+        # Send heartbeat to initialize connection
+        await self._send_heartbeat(websocket)
     
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
-        logger.info("websocket_disconnected", connections=len(self.active_connections))
+        
+        # Clean up metadata
+        if websocket in self.connection_metadata:
+            metadata = self.connection_metadata[websocket]
+            uptime = time.time() - metadata["connected_at"]
+            logger.info("websocket_disconnected", 
+                       connections=len(self.active_connections),
+                       uptime_seconds=uptime,
+                       messages_sent=metadata["messages_sent"],
+                       errors=metadata["errors"])
+            del self.connection_metadata[websocket]
+        
+        if websocket in self.last_heartbeat:
+            del self.last_heartbeat[websocket]
+    
+    async def _send_to_connection(self, websocket: WebSocket, data: dict):
+        """Send data to a specific connection with error handling"""
+        try:
+            await websocket.send_json(data)
+            if websocket in self.connection_metadata:
+                self.connection_metadata[websocket]["messages_sent"] += 1
+            return True
+        except Exception as e:
+            if websocket in self.connection_metadata:
+                self.connection_metadata[websocket]["errors"] += 1
+            logger.warning("websocket_send_error", error=str(e))
+            return False
+    
+    async def _send_heartbeat(self, websocket: WebSocket):
+        """Send heartbeat to specific connection"""
+        heartbeat_data = {
+            "type": "heartbeat",
+            "timestamp": time.time(),
+            "server_time": datetime.now().isoformat()
+        }
+        
+        success = await self._send_to_connection(websocket, heartbeat_data)
+        if success and websocket in self.connection_metadata:
+            self.connection_metadata[websocket]["last_heartbeat"] = time.time()
+            self.last_heartbeat[websocket] = time.time()
     
     async def broadcast(self, data: dict):
-        """Broadcast data para todas as conexões ativas"""
+        """Broadcast data para todas as conexões ativas com recovery"""
         if not self.active_connections:
             return
         
         disconnected = []
+        successful_sends = 0
+        
         for connection in self.active_connections:
-            try:
-                await connection.send_json(data)
-            except Exception:
+            success = await self._send_to_connection(connection, data)
+            if success:
+                successful_sends += 1
+            else:
                 disconnected.append(connection)
         
         # Remove conexões desconectadas
         for connection in disconnected:
+            self.disconnect(connection)
+        
+        # Log broadcast stats
+        if len(self.active_connections) > 0:
+            logger.debug("broadcast_completed", 
+                        connections=len(self.active_connections),
+                        successful_sends=successful_sends,
+                        failed_sends=len(disconnected))
+    
+    async def broadcast_heartbeat(self):
+        """Send heartbeat to all active connections"""
+        if not self.active_connections:
+            return
+        
+        current_time = time.time()
+        stale_connections = []
+        
+        for connection in self.active_connections:
+            last_heartbeat = self.last_heartbeat.get(connection, 0)
+            
+            # Check if connection is stale (no heartbeat in 2x interval)
+            if current_time - last_heartbeat > (self.heartbeat_interval * 2):
+                stale_connections.append(connection)
+            else:
+                await self._send_heartbeat(connection)
+        
+        # Remove stale connections
+        for connection in stale_connections:
+            logger.warning("removing_stale_connection", 
+                          stale_duration=current_time - self.last_heartbeat.get(connection, 0))
+            self.disconnect(connection)
+    
+    def get_connection_stats(self) -> dict:
+        """Get connection statistics"""
+        total_connections = len(self.active_connections)
+        if total_connections == 0:
+            return {
+                "total_connections": 0,
+                "avg_uptime": 0,
+                "total_messages_sent": 0,
+                "total_errors": 0
+            }
+        
+        current_time = time.time()
+        total_uptime = 0
+        total_messages = 0
+        total_errors = 0
+        
+        for connection, metadata in self.connection_metadata.items():
             if connection in self.active_connections:
-                self.active_connections.remove(connection)
+                total_uptime += current_time - metadata["connected_at"]
+                total_messages += metadata["messages_sent"]
+                total_errors += metadata["errors"]
+        
+        return {
+            "total_connections": total_connections,
+            "avg_uptime": total_uptime / total_connections if total_connections > 0 else 0,
+            "total_messages_sent": total_messages,
+            "total_errors": total_errors,
+            "error_rate": (total_errors / max(total_messages, 1)) * 100
+        }
 
 
 # Global instances
@@ -109,6 +227,7 @@ async def lifespan(app: FastAPI):
     # Start background tasks
     asyncio.create_task(trading_engine.start())
     asyncio.create_task(status_broadcaster())
+    asyncio.create_task(heartbeat_manager())
     
     logger.info("trading_bot_started")
     
@@ -156,14 +275,20 @@ async def status_broadcaster():
             
             if trading_engine and connection_manager.active_connections:
                 status = await trading_engine.get_status()
+                
+                # Add WebSocket connection stats to the status
+                ws_stats = connection_manager.get_connection_stats()
                 data_to_send = {
                     "type": "status_update",
-                    "data": status.model_dump(mode='json')
+                    "data": status.model_dump(mode='json'),
+                    "websocket_stats": ws_stats
                 }
+                
                 await connection_manager.broadcast(data_to_send)
                 logger.info("status_broadcast_sent", 
                            connections=active_connections,
-                           data_keys=list(data_to_send["data"].keys()))
+                           data_keys=list(data_to_send["data"].keys()),
+                           ws_error_rate=ws_stats.get("error_rate", 0))
             elif not trading_engine:
                 logger.warning("status_broadcaster_no_engine")
             elif not connection_manager.active_connections:
@@ -183,74 +308,143 @@ async def status_broadcaster():
             await asyncio.sleep(5)
 
 
+async def heartbeat_manager():
+    """Manage WebSocket heartbeats and connection health"""
+    logger.info("heartbeat_manager_started")
+    while True:
+        try:
+            await connection_manager.broadcast_heartbeat()
+            await asyncio.sleep(connection_manager.heartbeat_interval)
+        except Exception as e:
+            logger.error("heartbeat_manager_error", error=str(e))
+            await asyncio.sleep(10)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    """Dashboard HTML simples para monitoramento"""
+    """Dashboard HTML aprimorado para monitoramento"""
     return """
     <!DOCTYPE html>
     <html>
     <head>
         <title>Enterprise Trading Bot Dashboard</title>
         <style>
-            body { font-family: Arial, sans-serif; margin: 20px; background: #1a1a1a; color: #fff; }
-            .container { max-width: 1200px; margin: 0 auto; }
-            .header { text-align: center; margin-bottom: 30px; }
-            .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
-            .stat-card { background: #2d2d2d; padding: 20px; border-radius: 8px; border-left: 4px solid #00d4aa; }
-            .stat-value { font-size: 2em; font-weight: bold; color: #00d4aa; }
-            .stat-label { color: #ccc; font-size: 0.9em; }
-            .trades { background: #2d2d2d; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
-            .trade-item { padding: 10px; border-bottom: 1px solid #444; display: flex; justify-content: space-between; }
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background: #0f0f0f; color: #fff; }
+            .container { max-width: 1400px; margin: 0 auto; }
+            .header { text-align: center; margin-bottom: 30px; padding: 20px; background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); border-radius: 12px; }
+            .header h1 { margin: 0; font-size: 2.5em; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); }
+            .header p { margin: 10px 0 0 0; opacity: 0.8; font-size: 1.1em; }
+            .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px; }
+            .stat-card { background: linear-gradient(135deg, #2d2d2d 0%, #3a3a3a 100%); padding: 25px; border-radius: 12px; border-left: 4px solid #00d4aa; box-shadow: 0 4px 15px rgba(0,0,0,0.3); transition: transform 0.3s; }
+            .stat-card:hover { transform: translateY(-2px); }
+            .stat-value { font-size: 2.2em; font-weight: bold; color: #00d4aa; margin-bottom: 5px; }
+            .stat-label { color: #ccc; font-size: 0.9em; text-transform: uppercase; letter-spacing: 1px; }
+            .stat-change { font-size: 0.8em; margin-top: 5px; }
+            .trades { background: linear-gradient(135deg, #2d2d2d 0%, #3a3a3a 100%); padding: 25px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+            .section-title { margin: 0 0 20px 0; font-size: 1.3em; color: #00d4aa; display: flex; align-items: center; }
+            .section-title::before { content: ""; width: 4px; height: 20px; background: #00d4aa; margin-right: 10px; }
+            .trade-item { padding: 15px; margin-bottom: 10px; border-radius: 8px; background: rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center; }
+            .trade-item:hover { background: rgba(255,255,255,0.1); }
             .positive { color: #00d4aa; }
             .negative { color: #ff6b6b; }
             .neutral { color: #ffa500; }
-            .status { padding: 5px 10px; border-radius: 4px; font-size: 0.8em; }
+            .status { padding: 6px 12px; border-radius: 6px; font-size: 0.8em; font-weight: bold; text-transform: uppercase; }
             .status.active { background: #00d4aa; color: #000; }
             .status.demo { background: #ffa500; color: #000; }
+            .status.scanning { background: #2196f3; color: #fff; }
+            .connection-status { position: fixed; top: 20px; right: 20px; padding: 10px 15px; border-radius: 8px; font-size: 0.9em; z-index: 1000; }
+            .connection-status.connected { background: #00d4aa; color: #000; }
+            .connection-status.disconnected { background: #ff6b6b; color: #fff; }
+            .progress-bar { width: 100%; height: 8px; background: #444; border-radius: 4px; overflow: hidden; margin-top: 10px; }
+            .progress-fill { height: 100%; background: linear-gradient(90deg, #00d4aa, #2196f3); transition: width 0.3s; }
+            .symbol-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+            .symbol-card { background: rgba(255,255,255,0.05); padding: 15px; border-radius: 8px; border-left: 3px solid #00d4aa; }
+            .symbol-card.bullish { border-left-color: #00d4aa; }
+            .symbol-card.bearish { border-left-color: #ff6b6b; }
+            .symbol-card.neutral { border-left-color: #ffa500; }
+            .realtime-indicator { display: inline-block; width: 10px; height: 10px; background: #00d4aa; border-radius: 50%; animation: pulse 2s infinite; margin-right: 5px; }
+            @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+            .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 20px; }
+            .metric-item { background: rgba(255,255,255,0.05); padding: 15px; border-radius: 8px; text-align: center; }
         </style>
     </head>
     <body>
+        <div class="connection-status" id="connection-indicator">
+            <span class="realtime-indicator"></span>Conectando...
+        </div>
+        
         <div class="container">
             <div class="header">
                 <h1>🚀 Enterprise Trading Bot</h1>
-                <p>Monitoramento em tempo real - BingX Crypto Trading</p>
+                <p><span class="realtime-indicator"></span>Monitoramento em tempo real - BingX Crypto Trading (~550 símbolos)</p>
             </div>
             
             <div class="stats">
                 <div class="stat-card">
                     <div class="stat-value" id="active-positions">-</div>
                     <div class="stat-label">Posições Ativas</div>
+                    <div class="stat-change" id="positions-change"></div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-value" id="total-pnl">-</div>
                     <div class="stat-label">PnL Total (USDT)</div>
+                    <div class="stat-change" id="pnl-change"></div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-value" id="win-rate">-</div>
                     <div class="stat-label">Taxa de Acerto</div>
+                    <div class="stat-change" id="winrate-change"></div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-value" id="daily-trades">-</div>
                     <div class="stat-label">Trades Hoje</div>
+                    <div class="stat-change" id="trades-change"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="symbols-scanned">-</div>
+                    <div class="stat-label">Símbolos Monitorados</div>
+                    <div class="stat-change" id="symbols-change"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="api-latency">-</div>
+                    <div class="stat-label">Latência API (ms)</div>
+                    <div class="stat-change" id="latency-change"></div>
                 </div>
             </div>
             
             <div class="trades">
-                <h3>📊 Posições Ativas</h3>
+                <h3 class="section-title">📊 Posições Ativas</h3>
                 <div id="active-trades">
                     <p style="color: #666;">Nenhuma posição ativa...</p>
                 </div>
             </div>
             
             <div class="trades">
-                <h3>🔍 Análise em Tempo Real</h3>
+                <h3 class="section-title">🔍 Scanner de Mercado</h3>
+                <div class="metrics-grid">
+                    <div class="metric-item">
+                        <div style="font-size: 1.5em; color: #00d4aa;" id="scanning-progress">0%</div>
+                        <div style="font-size: 0.9em; color: #ccc;">Progresso do Scan</div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progress-bar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="metric-item">
+                        <div style="font-size: 1.5em; color: #2196f3;" id="signals-found">0</div>
+                        <div style="font-size: 0.9em; color: #ccc;">Sinais Encontrados</div>
+                    </div>
+                    <div class="metric-item">
+                        <div style="font-size: 1.5em; color: #ffa500;" id="scan-duration">0s</div>
+                        <div style="font-size: 0.9em; color: #ccc;">Duração do Scan</div>
+                    </div>
+                </div>
                 <div id="market-analysis">
                     <p style="color: #666;">Carregando análise de mercado...</p>
                 </div>
             </div>
             
             <div class="trades">
-                <h3>📈 Status do Sistema</h3>
+                <h3 class="section-title">📈 Status do Sistema</h3>
                 <div id="system-status">
                     <p style="color: #666;">Conectando...</p>
                 </div>
@@ -259,6 +453,8 @@ async def dashboard():
         
         <script>
             const ws = new WebSocket(`ws://localhost:8000/ws`);
+            let previousData = {};
+            let scanStartTime = Date.now();
             
             ws.onmessage = function(event) {
                 const message = JSON.parse(event.data);
@@ -270,79 +466,144 @@ async def dashboard():
             
             ws.onopen = function(event) {
                 console.log('WebSocket connected');
-                document.getElementById('system-status').innerHTML = '<p style="color: #00d4aa;">✅ Conectado</p>';
+                const indicator = document.getElementById('connection-indicator');
+                indicator.textContent = '🟢 Conectado';
+                indicator.className = 'connection-status connected';
+                document.getElementById('system-status').innerHTML = '<p style="color: #00d4aa;">✅ Sistema Online</p>';
             };
             
             ws.onclose = function(event) {
                 console.log('WebSocket disconnected');
+                const indicator = document.getElementById('connection-indicator');
+                indicator.textContent = '🔴 Desconectado';
+                indicator.className = 'connection-status disconnected';
                 document.getElementById('system-status').innerHTML = '<p style="color: #ff6b6b;">❌ Desconectado</p>';
+                setTimeout(() => location.reload(), 5000);
             };
             
             ws.onerror = function(error) {
                 console.log('WebSocket error:', error);
+                const indicator = document.getElementById('connection-indicator');
+                indicator.textContent = '🔴 Erro';
+                indicator.className = 'connection-status disconnected';
                 document.getElementById('system-status').innerHTML = '<p style="color: #ff6b6b;">❌ Erro de conexão</p>';
             };
             
             function updateDashboard(data) {
                 console.log('Updating dashboard with data:', data);
-                document.getElementById('active-positions').textContent = data.active_positions || 0;
-                document.getElementById('total-pnl').textContent = `${(data.total_pnl || 0).toFixed(2)}`;
-                document.getElementById('win-rate').textContent = `${(data.portfolio_metrics?.win_rate || 0).toFixed(1)}%`;
-                document.getElementById('daily-trades').textContent = data.portfolio_metrics?.daily_trades || 0;
+                
+                // Update core metrics with change indicators
+                updateMetricWithChange('active-positions', data.active_positions || 0, 'positions-change');
+                updateMetricWithChange('total-pnl', (data.total_pnl || 0).toFixed(2), 'pnl-change', 'USDT');
+                updateMetricWithChange('win-rate', (data.portfolio_metrics?.win_rate || 0).toFixed(1), 'winrate-change', '%');
+                updateMetricWithChange('daily-trades', data.portfolio_metrics?.daily_trades || 0, 'trades-change');
+                
+                // Update new metrics
+                updateMetricWithChange('symbols-scanned', data.system_health?.symbols_scanned || 0, 'symbols-change');
+                updateMetricWithChange('api-latency', data.system_health?.api_latency || 0, 'latency-change', 'ms');
+                
+                // Update scanning progress
+                updateScanningProgress(data);
                 
                 // Update active trades
-                const tradesDiv = document.getElementById('active-trades');
-                if (data.positions && data.positions.length > 0) {
-                    tradesDiv.innerHTML = data.positions.map(pos => `
-                        <div class="trade-item">
-                            <span>${pos.symbol} (${pos.side})</span>
-                            <span class="${pos.unrealized_pnl >= 0 ? 'positive' : 'negative'}">
-                                ${pos.unrealized_pnl.toFixed(2)} USDT (${pos.unrealized_pnl_pct.toFixed(2)}%)
-                            </span>
-                        </div>
-                    `).join('');
-                } else {
-                    tradesDiv.innerHTML = '<p style="color: #666;">Nenhuma posição ativa...</p>';
-                }
+                updateActiveTrades(data);
                 
                 // Update market analysis
                 updateMarketAnalysis(data);
                 
                 // Update system status
-                const statusDiv = document.getElementById('system-status');
-                statusDiv.innerHTML = `
-                    <p><span class="status ${data.mode === 'demo' ? 'demo' : 'active'}">${data.mode.toUpperCase()}</span> 
-                    Latência: ${data.api_latency || 0}ms | 
-                    Última atualização: ${new Date().toLocaleTimeString()}</p>
-                `;
+                updateSystemStatus(data);
+                
+                // Store for next comparison
+                previousData = data;
             }
             
-            ws.onopen = function() {
-                console.log('WebSocket conectado');
-            };
+            function updateMetricWithChange(elementId, newValue, changeElementId, suffix = '') {
+                const element = document.getElementById(elementId);
+                const changeElement = document.getElementById(changeElementId);
+                
+                if (element) {
+                    const oldValue = parseFloat(element.textContent.replace(/[^0-9.-]/g, '')) || 0;
+                    element.textContent = newValue + (suffix ? ' ' + suffix : '');
+                    
+                    if (changeElement && oldValue !== 0) {
+                        const change = parseFloat(newValue) - oldValue;
+                        if (change !== 0) {
+                            const changeText = change > 0 ? `+${change.toFixed(2)}` : change.toFixed(2);
+                            changeElement.innerHTML = `<span class="${change > 0 ? 'positive' : 'negative'}">${changeText}</span>`;
+                        }
+                    }
+                }
+            }
             
-            ws.onclose = function() {
-                console.log('WebSocket desconectado');
-                setTimeout(() => location.reload(), 5000);
-            };
+            function updateScanningProgress(data) {
+                const systemHealth = data.system_health || {};
+                const isScanning = data.is_running && systemHealth.symbols_scanned > 0;
+                
+                if (isScanning) {
+                    const progress = Math.min((systemHealth.symbols_scanned / 550) * 100, 100);
+                    document.getElementById('scanning-progress').textContent = `${progress.toFixed(1)}%`;
+                    document.getElementById('progress-bar').style.width = `${progress}%`;
+                    
+                    const scanDuration = ((Date.now() - scanStartTime) / 1000).toFixed(1);
+                    document.getElementById('scan-duration').textContent = `${scanDuration}s`;
+                }
+                
+                document.getElementById('signals-found').textContent = systemHealth.signals_generated || 0;
+            }
+            
+            function updateActiveTrades(data) {
+                const tradesDiv = document.getElementById('active-trades');
+                if (data.positions && data.positions.length > 0) {
+                    tradesDiv.innerHTML = data.positions.map(pos => `
+                        <div class="trade-item">
+                            <div>
+                                <strong>${pos.symbol}</strong> 
+                                <span class="status ${pos.side === 'buy' ? 'active' : 'demo'}">${pos.side.toUpperCase()}</span>
+                                <div style="font-size: 0.9em; color: #ccc; margin-top: 5px;">
+                                    Entrada: $${pos.entry_price?.toFixed(4) || 'N/A'} | 
+                                    Atual: $${pos.current_price?.toFixed(4) || 'N/A'} | 
+                                    Qtd: ${pos.size?.toFixed(6) || 'N/A'}
+                                </div>
+                            </div>
+                            <div style="text-align: right;">
+                                <div class="${pos.pnl >= 0 ? 'positive' : 'negative'}" style="font-size: 1.2em; font-weight: bold;">
+                                    ${pos.pnl?.toFixed(2) || '0.00'} USDT
+                                </div>
+                                <div class="${pos.pnl_pct >= 0 ? 'positive' : 'negative'}" style="font-size: 0.9em;">
+                                    ${pos.pnl_pct?.toFixed(2) || '0.00'}%
+                                </div>
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    tradesDiv.innerHTML = '<p style="color: #666; text-align: center; padding: 20px;">Nenhuma posição ativa...</p>';
+                }
+            }
             
             function updateMarketAnalysis(data) {
                 const analysisDiv = document.getElementById('market-analysis');
                 
                 if (data.market_analysis && data.market_analysis.length > 0) {
-                    analysisDiv.innerHTML = data.market_analysis.map(analysis => `
-                        <div class="trade-item">
-                            <span>
-                                <strong>${analysis.symbol}</strong> 
-                                (RSI: ${analysis.rsi?.toFixed(1) || 'N/A'}, 
-                                Preço: $${analysis.price?.toFixed(2) || 'N/A'})
-                            </span>
-                            <span class="${analysis.signal_strength >= 0.7 ? 'positive' : analysis.signal_strength >= 0.4 ? 'neutral' : 'negative'}">
-                                ${analysis.signal_type || 'NEUTRO'} 
-                                (${(analysis.signal_strength * 100).toFixed(0)}%)
-                            </span>
+                    analysisDiv.innerHTML = `
+                        <div class="symbol-grid">
+                            ${data.market_analysis.map(analysis => `
+                                <div class="symbol-card ${analysis.signal_strength >= 0.7 ? 'bullish' : analysis.signal_strength >= 0.4 ? 'neutral' : 'bearish'}">
+                                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                                        <strong>${analysis.symbol}</strong>
+                                        <span class="status ${analysis.signal_strength >= 0.7 ? 'active' : analysis.signal_strength >= 0.4 ? 'demo' : 'scanning'}">
+                                            ${analysis.signal_type || 'NEUTRO'}
+                                        </span>
+                                    </div>
+                                    <div style="margin-top: 10px; font-size: 0.9em;">
+                                        <div>Preço: $${analysis.price?.toFixed(4) || 'N/A'}</div>
+                                        <div>RSI: ${analysis.rsi?.toFixed(1) || 'N/A'}</div>
+                                        <div>Força: ${(analysis.signal_strength * 100).toFixed(0)}%</div>
+                                    </div>
+                                </div>
+                            `).join('')}
                         </div>
-                    `).join('');
+                    `;
                 } else {
                     const systemHealth = data.system_health || {};
                     analysisDiv.innerHTML = `
@@ -365,13 +626,57 @@ async def dashboard():
                             </span>
                         </div>
                         <div class="trade-item">
-                            <span>Símbolos Monitorados</span>
+                            <span>Símbolos Validados</span>
                             <span class="neutral">
-                                ${systemHealth.symbols_scanned || 0}
+                                ${systemHealth.symbols_scanned || 0} / ~550
                             </span>
                         </div>
                     `;
                 }
+            }
+            
+            function updateSystemStatus(data) {
+                const statusDiv = document.getElementById('system-status');
+                const systemHealth = data.system_health || {};
+                
+                statusDiv.innerHTML = `
+                    <div class="metrics-grid">
+                        <div class="metric-item">
+                            <div style="font-size: 1.5em; color: ${data.is_running ? '#00d4aa' : '#ff6b6b'};">
+                                ${data.is_running ? '✅' : '⏸️'}
+                            </div>
+                            <div style="font-size: 0.9em; color: #ccc;">
+                                ${data.is_running ? 'Sistema Ativo' : 'Sistema Parado'}
+                            </div>
+                        </div>
+                        <div class="metric-item">
+                            <div style="font-size: 1.5em; color: ${data.mode === 'demo' ? '#ffa500' : '#00d4aa'};">
+                                ${data.mode === 'demo' ? '🧪' : '💰'}
+                            </div>
+                            <div style="font-size: 0.9em; color: #ccc;">
+                                ${data.mode === 'demo' ? 'DEMO (VST)' : 'REAL (USDT)'}
+                            </div>
+                        </div>
+                        <div class="metric-item">
+                            <div style="font-size: 1.5em; color: ${systemHealth.api_success_rate >= 95 ? '#00d4aa' : systemHealth.api_success_rate >= 90 ? '#ffa500' : '#ff6b6b'};">
+                                ${systemHealth.api_success_rate?.toFixed(1) || '0.0'}%
+                            </div>
+                            <div style="font-size: 0.9em; color: #ccc;">Taxa de Sucesso API</div>
+                        </div>
+                        <div class="metric-item">
+                            <div style="font-size: 1.5em; color: #2196f3;">
+                                ${systemHealth.uptime_hours?.toFixed(1) || '0.0'}h
+                            </div>
+                            <div style="font-size: 0.9em; color: #ccc;">Uptime</div>
+                        </div>
+                    </div>
+                    <div style="margin-top: 20px; padding: 15px; background: rgba(255,255,255,0.05); border-radius: 8px;">
+                        <div style="font-size: 0.9em; color: #ccc;">
+                            Última atualização: ${new Date().toLocaleTimeString()} | 
+                            Últm scan: ${systemHealth.last_scan_time ? new Date(systemHealth.last_scan_time).toLocaleTimeString() : 'N/A'}
+                        </div>
+                    </div>
+                `;
             }
         </script>
     </body>
