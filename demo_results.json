@@ -1,0 +1,245 @@
+{
+  "demo_completed": "2025-07-16T18:04:40.706221",
+  "settings": {
+    "trading_mode": "demo",
+    "risk_profile": "moderate",
+    "position_size_usd": 10.0,
+    "max_positions": 5,
+    "min_confidence": 0.6
+  },
+  "metrics": {
+    "total_scans": 10,
+    "signals_generated": 0,
+    "signals_executed": 0,
+    "signals_rejected": 0,
+    "positions_opened": 0,
+    "positions_closed": 0,
+    "total_pnl": 0.0,
+    "success_rate": 0.0,
+    "average_signal_confidence": 0.0,
+    "total_api_calls": 10,
+    "average_response_time": 8036.9
+  },
+  "events": [
+    {
+      "timestamp": "2025-07-16T18:02:15.540037",
+      "step": "scanning",
+      "symbol": "BTCUSDT",
+      "data": {
+        "action": "market_scan"
+      },
+      "success": true,
+      "duration_ms": null,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:02:19.912854",
+      "step": "analyzing",
+      "symbol": "BTCUSDT",
+      "data": {
+        "confidence": 0.0
+      },
+      "success": false,
+      "duration_ms": 4372,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:02:21.414693",
+      "step": "scanning",
+      "symbol": "ETHUSDT",
+      "data": {
+        "action": "market_scan"
+      },
+      "success": true,
+      "duration_ms": null,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:02:25.684226",
+      "step": "analyzing",
+      "symbol": "ETHUSDT",
+      "data": {
+        "confidence": 0.0
+      },
+      "success": false,
+      "duration_ms": 4269,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:02:27.185334",
+      "step": "scanning",
+      "symbol": "BNBUSDT",
+      "data": {
+        "action": "market_scan"
+      },
+      "success": true,
+      "duration_ms": null,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:02:39.292946",
+      "step": "analyzing",
+      "symbol": "BNBUSDT",
+      "data": {
+        "confidence": 0.0
+      },
+      "success": false,
+      "duration_ms": 12107,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:02:40.794573",
+      "step": "scanning",
+      "symbol": "SOLUSDT",
+      "data": {
+        "action": "market_scan"
+      },
+      "success": true,
+      "duration_ms": null,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:03:00.162727",
+      "step": "analyzing",
+      "symbol": "SOLUSDT",
+      "data": {
+        "confidence": 0.0
+      },
+      "success": false,
+      "duration_ms": 19368,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:03:01.664094",
+      "step": "scanning",
+      "symbol": "ADAUSDT",
+      "data": {
+        "action": "market_scan"
+      },
+      "success": true,
+      "duration_ms": null,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:03:36.625126",
+      "step": "analyzing",
+      "symbol": "ADAUSDT",
+      "data": {
+        "confidence": 0.0
+      },
+      "success": false,
+      "duration_ms": 34960,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:04:09.356425",
+      "step": "scanning",
+      "symbol": "BTCUSDT",
+      "data": {
+        "action": "market_scan"
+      },
+      "success": true,
+      "duration_ms": null,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:04:09.943969",
+      "step": "analyzing",
+      "symbol": "BTCUSDT",
+      "data": {
+        "confidence": 0.0
+      },
+      "success": false,
+      "duration_ms": 587,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:04:09.944086",
+      "step": "scanning",
+      "symbol": "ETHUSDT",
+      "data": {
+        "action": "market_scan"
+      },
+      "success": true,
+      "duration_ms": null,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:04:11.054562",
+      "step": "analyzing",
+      "symbol": "ETHUSDT",
+      "data": {
+        "confidence": 0.0
+      },
+      "success": false,
+      "duration_ms": 1110,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:04:11.054669",
+      "step": "scanning",
+      "symbol": "BNBUSDT",
+      "data": {
+        "action": "market_scan"
+      },
+      "success": true,
+      "duration_ms": null,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:04:12.241260",
+      "step": "analyzing",
+      "symbol": "BNBUSDT",
+      "data": {
+        "confidence": 0.0
+      },
+      "success": false,
+      "duration_ms": 1186,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:04:12.241368",
+      "step": "scanning",
+      "symbol": "SOLUSDT",
+      "data": {
+        "action": "market_scan"
+      },
+      "success": true,
+      "duration_ms": null,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:04:13.462638",
+      "step": "analyzing",
+      "symbol": "SOLUSDT",
+      "data": {
+        "confidence": 0.0
+      },
+      "success": false,
+      "duration_ms": 1221,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:04:13.863194",
+      "step": "scanning",
+      "symbol": "ADAUSDT",
+      "data": {
+        "action": "market_scan"
+      },
+      "success": true,
+      "duration_ms": null,
+      "error": null
+    },
+    {
+      "timestamp": "2025-07-16T18:04:15.052654",
+      "step": "analyzing",
+      "symbol": "ADAUSDT",
+      "data": {
+        "confidence": 0.0
+      },
+      "success": false,
+      "duration_ms": 1189,
+      "error": null
+    }
+  ]
+}

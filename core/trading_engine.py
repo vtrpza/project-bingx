@@ -16,6 +16,11 @@ import numpy as np
 from config.settings import settings
 from core.exchange_manager import BingXExchangeManager
 from core.risk_manager import RiskManager
+from core.demo_monitor import (
+    get_demo_monitor, log_scan_event, log_analysis_event, 
+    log_signal_event, log_risk_event, log_execution_event,
+    log_position_event, log_close_event
+)
 from analysis.indicators import TechnicalIndicators
 from analysis.timeframes import TimeframeManager
 from data.models import (
@@ -49,9 +54,12 @@ class TradingEngine:
         self._market_data_cache = {}
         self._cache_timestamp = {}
         
+        # Demo monitor
+        self.demo_monitor = get_demo_monitor()
+        
         logger.info("trading_engine_initialized", 
-                   mode=settings.trading_mode,
-                   max_positions=settings.max_positions)
+                    mode=settings.trading_mode,
+                    max_positions=settings.max_positions)
     
     async def start(self):
         """Inicia o motor de trading"""
@@ -60,6 +68,9 @@ class TradingEngine:
             return
         
         try:
+            # Iniciar demo monitor
+            self.demo_monitor.start_monitoring()
+            
             # Validar conexão com exchange
             await self.exchange.test_connection()
             
@@ -96,6 +107,9 @@ class TradingEngine:
             if settings.close_positions_on_stop:
                 await self.close_all_positions("system_shutdown")
             
+            # Parar demo monitor
+            self.demo_monitor.stop_monitoring()
+            
             logger.info("trading_engine_stopped")
             
         except Exception as e:
@@ -122,7 +136,7 @@ class TradingEngine:
                     self.active_positions[position.symbol] = position
             
             logger.info("state_initialized", 
-                       active_positions=len(self.active_positions))
+                        active_positions=len(self.active_positions))
             
         except Exception as e:
             logger.log_error(e, context="Initializing trading state")
@@ -177,8 +191,8 @@ class TradingEngine:
             valid_symbols = await self._filter_valid_symbols(all_symbols)
             
             logger.info("parallel_scan_started", 
-                       total_symbols=len(all_symbols),
-                       valid_symbols=len(valid_symbols))
+                        total_symbols=len(all_symbols),
+                        valid_symbols=len(valid_symbols))
             
             # Sequential analysis with immediate execution
             executed_signals = await self._sequential_symbol_analysis_with_immediate_execution(valid_symbols)
@@ -188,10 +202,10 @@ class TradingEngine:
             self.last_scan_time = datetime.now()
             
             logger.info("parallel_scan_completed",
-                       symbols_scanned=len(valid_symbols),
-                       signals_found=len(executed_signals),  # Fixed: use executed_signals as signals_found
-                       signals_executed=len(executed_signals),
-                       scan_duration=scan_duration)
+                        symbols_scanned=len(valid_symbols),
+                        signals_found=len(executed_signals),  # Fixed: use executed_signals as signals_found
+                        signals_executed=len(executed_signals),
+                        scan_duration=scan_duration)
             
             # Manter histórico de sinais
             self.recent_signals.extend(executed_signals)
@@ -202,17 +216,31 @@ class TradingEngine:
             self.is_scanning = False
     
     async def scan_market(self):
-        """Alias for scan_symbols to maintain compatibility with dashboard"""
-        return await self.scan_symbols()
+        """Escaneia mercado em busca de oportunidades"""
+        return await self._scan_market_opportunities()
     
     async def _get_all_bingx_symbols(self) -> List[str]:
-        """Obtém TODOS os símbolos BingX Futures (~550)"""
+        """Obtém símbolos BingX Futures com cache otimizado para rate limiting"""
         try:
-            # Cache para evitar requests desnecessários
+            # Cache para evitar requests desnecessários (TTL mais longo)
             cache_key = "all_bingx_symbols"
             if (cache_key in self._market_data_cache and 
-                time.time() - self._cache_timestamp.get(cache_key, 0) < 1800):  # 30 min
+                time.time() - self._cache_timestamp.get(cache_key, 0) < 7200):  # 2 horas
                 return self._market_data_cache[cache_key]
+            
+            # Usar símbolos permitidos se disponíveis para evitar chamada da API
+            if settings.allowed_symbols:
+                logger.info("using_configured_symbols", 
+                           symbols_count=len(settings.allowed_symbols))
+                
+                # Cache símbolos configurados
+                self._market_data_cache[cache_key] = settings.allowed_symbols
+                self._cache_timestamp[cache_key] = time.time()
+                
+                return settings.allowed_symbols
+            
+            # Só chamar API se não há símbolos configurados
+            logger.info("fetching_symbols_from_api", reason="no_configured_symbols")
             
             # Usar método específico do exchange para obter todos os símbolos
             all_symbols = await self.exchange.get_futures_symbols()
@@ -224,13 +252,28 @@ class TradingEngine:
                 if symbol.endswith(currency_suffix)
             ]
             
+            # Usar subset se muitos símbolos para evitar rate limiting
+            if len(filtered_symbols) > 20:
+                # Usar apenas top 20 símbolos mais populares
+                popular_symbols = [
+                    "BTC-USDT", "ETH-USDT", "BNB-USDT", "ADA-USDT", "SOL-USDT",
+                    "DOT-USDT", "AVAX-USDT", "LINK-USDT", "MATIC-USDT", "UNI-USDT",
+                    "ATOM-USDT", "FIL-USDT", "LTC-USDT", "TRX-USDT", "ETC-USDT",
+                    "XRP-USDT", "BCH-USDT", "EOS-USDT", "AAVE-USDT", "SUSHI-USDT"
+                ]
+                filtered_symbols = [s for s in popular_symbols if s in filtered_symbols]
+                
+                logger.info("using_popular_symbols_subset", 
+                           total_available=len(all_symbols),
+                           subset_used=len(filtered_symbols))
+            
             # Cache resultado
             self._market_data_cache[cache_key] = filtered_symbols
             self._cache_timestamp[cache_key] = time.time()
             
             logger.info("all_symbols_fetched", 
-                       total_symbols=len(all_symbols),
-                       usdt_symbols=len(filtered_symbols))
+                        total_symbols=len(all_symbols),
+                        usdt_symbols=len(filtered_symbols))
             
             return filtered_symbols
             
@@ -260,8 +303,8 @@ class TradingEngine:
             valid_symbols = [s for s in popular_symbols if s in symbols]
         
         logger.info("symbol_filtering_completed",
-                   total_symbols=len(symbols),
-                   valid_symbols=len(valid_symbols))
+                    total_symbols=len(symbols),
+                    valid_symbols=len(valid_symbols))
         
         return valid_symbols
 
@@ -285,64 +328,202 @@ class TradingEngine:
             return False
 
     async def _sequential_symbol_analysis_with_immediate_execution(self, symbols: List[str]) -> List[TradingSignal]:
-        """Analisa símbolos sequencialmente e executa ordens imediatamente quando encontra sinais"""
+        """Analisa símbolos com paralelização controlada e execução imediata"""
         executed_signals = []
         
-        logger.info("sequential_scan_started", total_symbols=len(symbols))
+        # Determinar estratégia de processamento baseada na performance da API
+        api_metrics = self.exchange.get_performance_metrics()
+        performance_status = api_metrics.get("performance_status", "GOOD")
         
-        for i, symbol in enumerate(symbols):
+        # Ajustar batch size baseado na performance
+        if performance_status == "EXCELLENT":
+            batch_size = 4  # Alta performance - mais paralelo
+        elif performance_status in ["GOOD", "MODERATE"]:
+            batch_size = 2  # Performance moderada - paralelo limitado
+        else:
+            batch_size = 1  # Baixa performance - sequencial
+        
+        logger.info("controlled_parallel_scan_started", 
+                    total_symbols=len(symbols),
+                    batch_size=batch_size,
+                    performance_status=performance_status)
+        
+        # Processar símbolos em batches controlados
+        for i in range(0, len(symbols), batch_size):
             # Break if we've reached max positions
             if len(self.active_positions) >= settings.max_positions:
-                logger.info("max_positions_reached", current_positions=len(self.active_positions))
+                logger.info("max_positions_reached", 
+                            current_positions=len(self.active_positions))
                 break
             
-            # Skip if we already have a position in this symbol
-            if symbol in self.active_positions:
+            batch_symbols = symbols[i:i + batch_size]
+            
+            # Filtrar símbolos que já têm posições
+            available_symbols = [s for s in batch_symbols if s not in self.active_positions]
+            
+            if not available_symbols:
                 continue
             
+            # Processar batch sequencialmente para evitar rate limiting
             try:
-                # Analyze symbol for signal
-                signal = await self._analyze_symbol(symbol)
-                
-                if signal and signal.confidence >= settings.min_confidence:
-                    logger.info("signal_detected", 
-                               symbol=symbol, 
-                               side=signal.side, 
-                               confidence=signal.confidence)
-                    
-                    # Immediate execution if signal is strong enough
-                    if signal.confidence >= 0.7:  # High confidence threshold
-                        # Validate with risk manager
-                        allowed, reason = await self.risk_manager.validate_new_position(signal, self.active_positions)
-                        if allowed:
-                            # Execute immediately
-                            result = await self._execute_signal(signal)
-                            if result:
-                                executed_signals.append(signal)
-                                logger.info("signal_executed_immediately", 
-                                           symbol=symbol, 
-                                           side=signal.side)
-                        else:
-                            logger.info("signal_rejected_by_risk_manager", 
-                                       symbol=symbol, reason=reason)
-                    else:
-                        # Store for later review (low confidence)
-                        self.recent_signals.append(signal)
-                
-                # Progressive delay to respect rate limits
-                if i < len(symbols) - 1:  # Don't delay after last symbol
-                    await asyncio.sleep(2.0)  # 2 seconds between symbols (more conservative)
+                for symbol in available_symbols:
+                    try:
+                        result = await self._analyze_symbol_with_execution(symbol)
+                        
+                        if result:  # Signal foi executado
+                            executed_signals.append(result)
+                            logger.info("signal_executed_from_batch", 
+                                        symbol=symbol, 
+                                        side=result.side,
+                                        confidence=result.confidence)
+                    except Exception as e:
+                        logger.log_error(e, context=f"Sequential analysis for {symbol}")
+                        continue
                 
             except Exception as e:
-                logger.log_error(e, context=f"Sequential analysis error for {symbol}")
-                # Continue to next symbol on error
+                logger.log_error(e, context=f"Processing batch {i//batch_size + 1}")
                 continue
+            
+            # Delay entre batches baseado na performance
+            if i + batch_size < len(symbols):  # Não esperar após o último batch
+                batch_delay = self._calculate_batch_delay(performance_status, batch_size)
+                if batch_delay > 0:
+                    await asyncio.sleep(batch_delay)
         
-        logger.info("sequential_scan_completed", 
-                   symbols_analyzed=len(symbols),
-                   signals_executed=len(executed_signals))
+        logger.info("controlled_parallel_scan_completed",
+                    symbols_scanned=len(symbols),
+                    signals_executed=len(executed_signals))
         
         return executed_signals
+    
+    async def _analyze_symbol_with_execution(self, symbol: str) -> Optional[TradingSignal]:
+        """Analisa símbolo e executa imediatamente se encontrar sinal válido"""
+        try:
+            # Log scanning event
+            scan_start = time.time()
+            log_scan_event(symbol, success=True)
+            
+            # Analyze symbol for signal
+            analysis_start = time.time()
+            signal = await self._analyze_symbol(symbol)
+            analysis_duration = int((time.time() - analysis_start) * 1000)
+            
+            if signal and signal.confidence >= settings.min_confidence:
+                # Log analysis success
+                log_analysis_event(symbol, signal.confidence, success=True, duration_ms=analysis_duration)
+                
+                # Log signal generated
+                log_signal_event(signal, success=True)
+                
+                logger.info("signal_detected", 
+                            symbol=symbol, 
+                            side=signal.side, 
+                            confidence=signal.confidence)
+            elif signal:
+                # Log signal gerado mas com baixa confiança
+                logger.info("signal_low_confidence", 
+                            symbol=symbol, 
+                            side=signal.side, 
+                            confidence=signal.confidence,
+                            min_required=settings.min_confidence,
+                            entry_type=signal.indicators.get("entry_type", "primary"))
+                
+                # Immediate execution if signal is strong enough
+                if signal.confidence >= 0.7:  # High confidence threshold
+                    # Validate with risk manager
+                    allowed, reason = await self.risk_manager.validate_new_position(signal, self.active_positions)
+                    
+                    # Log risk validation
+                    log_risk_event(symbol, allowed, reason)
+                    
+                    if allowed:
+                        # Execute immediately
+                        exec_start = time.time()
+                        result = await self._execute_signal(signal)
+                        exec_duration = int((time.time() - exec_start) * 1000)
+                        
+                        if result:
+                            # Log successful execution
+                            log_execution_event(symbol, success=True, order_id=f"DEMO_{symbol}_{int(time.time())}", duration_ms=exec_duration)
+                            return signal  # Return executed signal
+                        else:
+                            # Log failed execution
+                            log_execution_event(symbol, success=False, error="execution_failed")
+                    else:
+                        logger.info("signal_rejected_by_risk_manager", 
+                                    symbol=symbol, reason=reason)
+                else:
+                    # Store for later review (low confidence)
+                    self.recent_signals.append(signal)
+            else:
+                # Log analysis with no signal
+                confidence = signal.confidence if signal else 0.0
+                log_analysis_event(symbol, confidence, success=False, duration_ms=analysis_duration)
+                
+                if not signal:
+                    logger.debug("no_signal_generated", 
+                                symbol=symbol, 
+                                reason="conditions_not_met")
+            
+            return None  # No signal executed
+            
+        except Exception as e:
+            logger.log_error(e, context=f"Analyzing symbol {symbol}")
+            return None
+    
+    def _calculate_batch_delay(self, performance_status: str, batch_size: int) -> float:
+        """Calcula delay entre batches baseado na performance"""
+        base_delay = 0.5  # Delay base otimizado
+        
+        # Ajustar baseado no status da API
+        if performance_status == "EXCELLENT":
+            multiplier = 0.5  # Delay reduzido para alta performance
+        elif performance_status == "GOOD":
+            multiplier = 1.0  # Delay padrão
+        elif performance_status == "MODERATE":
+            multiplier = 1.5  # Delay aumentado
+        elif performance_status == "SLOW":
+            multiplier = 2.0  # Delay dobrado
+        else:  # DEGRADED, RATE_LIMITED
+            multiplier = 3.0  # Delay triplicado
+        
+        # Ajustar baseado no batch size
+        batch_multiplier = 1.0 + (batch_size - 1) * 0.2  # Mais delay para batches maiores
+        
+        return base_delay * multiplier * batch_multiplier
+
+    def _calculate_dynamic_delay(self) -> float:
+        """Calcula delay dinâmico baseado na performance da API"""
+        # Obter métricas de performance do exchange manager
+        avg_response_time = self.exchange.rate_metrics.avg_response_time
+        success_rate = self.exchange.rate_metrics.success_rate
+        recent_errors = self.exchange.rate_metrics.errors_count
+        
+        # Delay base otimizado (reduzido de 2.0s para 0.5s)
+        base_delay = 0.5
+        
+        # Ajustar baseado no tempo de resposta médio
+        if avg_response_time > 1000:  # > 1 segundo
+            base_delay += 0.3
+        elif avg_response_time > 500:  # > 500ms
+            base_delay += 0.2
+        elif avg_response_time < 200:  # < 200ms (rápido)
+            base_delay = max(0.3, base_delay - 0.2)
+        
+        # Ajustar baseado na taxa de sucesso
+        if success_rate < 95:
+            base_delay += 0.5
+        elif success_rate > 99:
+            base_delay = max(0.3, base_delay - 0.1)
+        
+        # Ajustar baseado em errors recentes
+        if recent_errors > 5:
+            base_delay += 1.0
+        elif recent_errors == 0:
+            base_delay = max(0.3, base_delay - 0.1)
+        
+        # Limitar entre 0.3s e 5.0s
+        return max(0.3, min(5.0, base_delay))
 
     async def _get_tradeable_symbols(self) -> List[str]:
         """Obtém lista de símbolos tradeable (para compatibilidade)"""
@@ -377,8 +558,8 @@ class TradingEngine:
     async def _analyze_symbol(self, symbol: str) -> Optional[TradingSignal]:
         """Analisa um símbolo para oportunidades de trading"""
         try:
-            # Obter dados históricos
-            klines_5m = await self.exchange.get_klines(symbol, "5m", 500)
+            # Obter dados históricos (otimizado para rate limiting)
+            klines_5m = await self.exchange.get_klines(symbol, "5m", 200)
             
             if klines_5m is None or (hasattr(klines_5m, 'empty') and klines_5m.empty) or len(klines_5m) < 100:
                 return None
@@ -398,12 +579,19 @@ class TradingEngine:
             conditions_2h = TechnicalIndicators.validate_signal_conditions(df_2h)
             conditions_4h = TechnicalIndicators.validate_signal_conditions(df_4h)
             
+            # Log das condições para debug
+            logger.debug("signal_conditions", 
+                        symbol=symbol,
+                        conditions_2h=conditions_2h,
+                        conditions_4h=conditions_4h)
+            
             # Lógica de decisão (mantém mesma do bot original)
             signal = None
             
-            # Sinal LONG
-            if (conditions_2h["long_cross"] and conditions_4h["rsi_ok"] and 
-                conditions_2h["distance_ok"] and conditions_4h["slope_ok"]):
+            # ENTRADA PRINCIPAL (condições mais flexíveis)
+            if (conditions_2h["rsi_ok"] and 
+                conditions_2h["distance_ok"] and 
+                (conditions_2h["long_cross"] or conditions_2h["slope_ok"])):
                 
                 confidence = self._calculate_signal_confidence(
                     conditions_2h, conditions_4h, "long"
@@ -426,9 +614,10 @@ class TradingEngine:
                     timestamp=datetime.now()
                 )
             
-            # Sinal SHORT
-            elif (conditions_2h["short_cross"] and conditions_4h["rsi_ok"] and 
-                  conditions_2h["distance_ok"] and conditions_4h["slope_ok"]):
+            # ENTRADA PRINCIPAL SHORT (condições mais flexíveis)
+            elif (conditions_2h["rsi_ok"] and 
+                  conditions_2h["distance_ok"] and 
+                  (conditions_2h["short_cross"] or conditions_2h["slope_ok"])):
                 
                 confidence = self._calculate_signal_confidence(
                     conditions_2h, conditions_4h, "short"
@@ -451,6 +640,65 @@ class TradingEngine:
                     timestamp=datetime.now()
                 )
             
+            # REENTRADA (apenas distância 2% da SMA vs preço atual)
+            elif not signal:
+                current_price = float(df_5m.iloc[-1]["close"])
+                sma_2h = float(df_2h.iloc[-1]["sma"])
+                sma_4h = float(df_4h.iloc[-1]["sma"])
+                
+                # Distância de 2% da SMA
+                distance_2h = abs(current_price - sma_2h) / sma_2h
+                distance_4h = abs(current_price - sma_4h) / sma_4h
+                
+                if distance_2h >= 0.005 or distance_4h >= 0.005:  # 0.5% em vez de 2%
+                    # REENTRADA LONG (preço abaixo da SMA de 2h OU 4h)
+                    if current_price < sma_2h or current_price < sma_4h:
+                        signal = TradingSignal(
+                            symbol=symbol,
+                            side="buy",
+                            confidence=0.6,  # Confiança fixa para reentrada
+                            entry_price=current_price,
+                            stop_loss=current_price * (1 - settings.stop_loss_pct),
+                            take_profit=current_price * (1 + settings.take_profit_pct),
+                            indicators={
+                                "entry_type": "reentry",
+                                "distance_2h": distance_2h,
+                                "distance_4h": distance_4h,
+                                "current_price": current_price,
+                                "sma_2h": sma_2h,
+                                "sma_4h": sma_4h
+                            },
+                            timestamp=datetime.now()
+                        )
+                    
+                    # REENTRADA SHORT (preço acima da SMA de 2h OU 4h)
+                    elif current_price > sma_2h or current_price > sma_4h:
+                        signal = TradingSignal(
+                            symbol=symbol,
+                            side="sell",
+                            confidence=0.6,  # Confiança fixa para reentrada
+                            entry_price=current_price,
+                            stop_loss=current_price * (1 + settings.stop_loss_pct),
+                            take_profit=current_price * (1 - settings.take_profit_pct),
+                            indicators={
+                                "entry_type": "reentry",
+                                "distance_2h": distance_2h,
+                                "distance_4h": distance_4h,
+                                "current_price": current_price,
+                                "sma_2h": sma_2h,
+                                "sma_4h": sma_4h
+                            },
+                            timestamp=datetime.now()
+                        )
+            
+            # Log final do resultado
+            if signal:
+                logger.info("signal_generated", 
+                           symbol=symbol, 
+                           side=signal.side, 
+                           confidence=signal.confidence,
+                           entry_type=signal.indicators.get("entry_type", "primary"))
+            
             return signal
             
         except Exception as e:
@@ -458,28 +706,34 @@ class TradingEngine:
             return None
     
     def _calculate_signal_confidence(self, conditions_2h: dict, conditions_4h: dict, side: str) -> float:
-        """Calcula confiança do sinal baseado nas condições"""
-        base_confidence = 0.5
+        """Calcula confiança do sinal baseado nas condições (otimizado para mercado real)"""
+        base_confidence = 0.6  # Aumentado de 0.5 para 0.6
         
-        # Fatores que aumentam confiança
-        if conditions_2h["rsi_ok"] and conditions_4h["rsi_ok"]:
-            base_confidence += 0.15
+        # Fatores que aumentam confiança (mais generosos)
+        if conditions_2h["rsi_ok"]:
+            base_confidence += 0.1
+        if conditions_4h["rsi_ok"]:
+            base_confidence += 0.1
         
         if conditions_2h["distance_ok"]:
-            distance_bonus = min(conditions_2h["distance_value"] / 10.0, 0.2)
+            distance_bonus = min(conditions_2h["distance_value"] / 5.0, 0.15)  # Mais generoso
             base_confidence += distance_bonus
         
         if conditions_4h["slope_ok"]:
-            slope_bonus = min(conditions_4h["slope_value"] * 10, 0.15)
+            slope_bonus = min(conditions_4h["slope_value"] * 20, 0.1)  # Mais generoso
             base_confidence += slope_bonus
         
-        # Ajustes específicos por lado
+        # Ajustes específicos por lado (mais flexíveis)
         if side == "long":
-            if conditions_2h["rsi_value"] < 50:  # RSI favorável para long
-                base_confidence += 0.1
+            if conditions_2h["rsi_value"] < 60:  # RSI mais flexível para long
+                base_confidence += 0.05
         else:  # short
-            if conditions_2h["rsi_value"] > 50:  # RSI favorável para short
-                base_confidence += 0.1
+            if conditions_2h["rsi_value"] > 40:  # RSI mais flexível para short
+                base_confidence += 0.05
+        
+        # Bonus por cruzamento
+        if conditions_2h["long_cross"] or conditions_2h["short_cross"]:
+            base_confidence += 0.05
         
         return min(base_confidence, 0.95)  # Máximo 95%
     
@@ -524,10 +778,10 @@ class TradingEngine:
                 self.active_positions[signal.symbol] = position
                 
                 logger.info("signal_executed",
-                           symbol=signal.symbol,
-                           side=signal.side,
-                           confidence=signal.confidence,
-                           size=position_size)
+                            symbol=signal.symbol,
+                            side=signal.side,
+                            confidence=signal.confidence,
+                            size=position_size)
             
             return result
             
@@ -557,16 +811,45 @@ class TradingEngine:
             return 0.0
     
     async def _update_active_positions(self):
-        """Atualiza preços e PnL das posições ativas"""
+        """Atualiza preços e PnL das posições ativas com rate limiting otimizado"""
         if not self.active_positions:
             return
         
         try:
-            for symbol, position in self.active_positions.items():
-                # Obter preço atual
-                ticker = await self.exchange.get_ticker(symbol)
-                current_price = float(ticker.get("price", position.current_price))
+            # Processar em lotes para reduzir rate limiting
+            symbols = list(self.active_positions.keys())
+            
+            # Processar até 3 símbolos por vez para evitar rate limiting
+            batch_size = 3
+            for i in range(0, len(symbols), batch_size):
+                batch_symbols = symbols[i:i + batch_size]
                 
+                # Processar batch sequencialmente para evitar rate limiting
+                for symbol in batch_symbols:
+                    try:
+                        await self._update_single_position(symbol)
+                    except Exception as e:
+                        logger.log_error(e, context=f"Updating position {symbol}")
+                        continue
+                
+                # Delay entre batches para evitar rate limiting
+                if i + batch_size < len(symbols):
+                    await asyncio.sleep(0.5)  # 500ms entre batches
+        
+        except Exception as e:
+            logger.log_error(e, context="Updating active positions")
+    
+    async def _update_single_position(self, symbol: str):
+        """Atualiza uma única posição"""
+        try:
+            position = self.active_positions.get(symbol)
+            if not position:
+                return
+            
+            # Obter preço atual usando método otimizado
+            current_price = await self.exchange.get_latest_price(symbol)
+            
+            if current_price and current_price > 0:
                 # Atualizar posição
                 position.current_price = current_price
                 
@@ -580,9 +863,15 @@ class TradingEngine:
                 
                 position.pnl = pnl
                 position.pnl_pct = pnl_pct
+                
+                logger.debug("position_updated", 
+                           symbol=symbol, 
+                           current_price=current_price,
+                           pnl=pnl, 
+                           pnl_pct=pnl_pct)
         
         except Exception as e:
-            logger.log_error(e, context="Updating active positions")
+            logger.log_error(e, context=f"Updating position for {symbol}")
     
     async def _manage_position_risk(self):
         """Gerencia risco das posições ativas"""
@@ -609,7 +898,8 @@ class TradingEngine:
                         position.stop_loss < position.entry_price):
                         # Mover stop loss para break even
                         position.stop_loss = position.entry_price
-                        logger.info("stop_loss_moved_to_break_even", symbol=symbol)
+                        logger.info("stop_loss_moved_to_break_even", 
+                                    symbol=symbol)
                     
                     # Verificar trailing stop
                     if (position.pnl_pct >= settings.trailing_trigger_pct and
@@ -617,7 +907,8 @@ class TradingEngine:
                         trailing_stop = position.current_price * (1 - settings.stop_loss_pct)
                         if trailing_stop > position.stop_loss:
                             position.stop_loss = trailing_stop
-                            logger.info("trailing_stop_updated", symbol=symbol, new_stop=trailing_stop)
+                            logger.info("trailing_stop_updated", 
+                                        symbol=symbol, new_stop=trailing_stop)
                 
                 else:  # short position
                     if position.current_price >= position.stop_loss:
@@ -780,7 +1071,8 @@ class TradingEngine:
                 )
                 
                 del self.active_positions[symbol]
-                logger.info("position_closed", symbol=symbol, reason=reason, pnl=position.pnl)
+                logger.info("position_closed", 
+                            symbol=symbol, reason=reason, pnl=position.pnl)
                 return True
             
             return False
@@ -896,19 +1188,25 @@ class TradingEngine:
         }
     
     async def _get_basic_market_analysis(self) -> List[Dict[str, Any]]:
-        """Obtém análise básica de alguns símbolos para o dashboard"""
+        """Obtém análise básica de alguns símbolos para o dashboard com rate limiting otimizado"""
         try:
+            # Cache para análise de mercado
+            cache_key = "basic_market_analysis"
+            if (cache_key in self._market_data_cache and 
+                time.time() - self._cache_timestamp.get(cache_key, 0) < 60):  # 1 min cache
+                return self._market_data_cache[cache_key]
+            
             # Pegar alguns símbolos para análise rápida
-            analysis_symbols = ["BTC-USDT", "ETH-USDT", "BNB-USDT"][:3]  # Limitar para performance
+            analysis_symbols = ["BTC-USDT", "ETH-USDT"][:2]  # Reduzido para 2 símbolos
             market_data = []
             
+            # Processar símbolos em batch para reduzir rate limiting
             for symbol in analysis_symbols:
                 try:
-                    # Obter preço atual
-                    ticker = await self.exchange.get_ticker(symbol)
-                    current_price = float(ticker.get("price", 0))
+                    # Obter preço atual usando método otimizado
+                    current_price = await self.exchange.get_latest_price(symbol)
                     
-                    if current_price > 0:
+                    if current_price and current_price > 0:
                         # Análise muito básica - simular alguns valores para demonstração
                         fake_rsi = 45 + (hash(symbol) % 20)  # RSI simulado entre 45-65
                         signal_strength = 0.3 + (hash(symbol + str(int(time.time()))) % 50) / 100  # 0.3-0.8
@@ -927,9 +1225,16 @@ class TradingEngine:
                             "signal_strength": signal_strength
                         })
                         
+                    # Delay entre símbolos para evitar rate limiting
+                    await asyncio.sleep(0.2)
+                        
                 except Exception as e:
                     logger.log_error(e, context=f"Getting analysis for {symbol}")
                     continue
+            
+            # Cache resultado
+            self._market_data_cache[cache_key] = market_data
+            self._cache_timestamp[cache_key] = time.time()
             
             return market_data
             

@@ -8,6 +8,7 @@ Construção de candles não-padrão baseados em blocos de 5 minutos.
 
 import pandas as pd
 import numpy as np
+import time
 from typing import Dict, Tuple, Optional
 from datetime import datetime, timedelta
 
@@ -145,35 +146,78 @@ class TimeframeManager:
     
     async def get_multi_timeframe_data(self, symbol: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
-        Obtém dados de múltiplos timeframes
+        Obtém dados de múltiplos timeframes otimizado para rate limiting
         Retorna (df_2h, df_4h, df_5m) - mesma interface do sistema atual
         """
         try:
-            # Obter dados base de 5 minutos com margem extra
-            df_5m = await self.exchange.get_klines(symbol, "5m", limit=650)
+            # Usar cache global para evitar múltiplas chamadas do mesmo símbolo
+            cache_key = f"multi_timeframe_{symbol}"
+            if hasattr(self, '_multi_cache') and cache_key in self._multi_cache:
+                cache_data = self._multi_cache[cache_key]
+                if time.time() - cache_data['timestamp'] < 300:  # 5 min cache
+                    return cache_data['data']
             
-            if df_5m.empty or len(df_5m) < 624:  # Mínimo necessário
-                logger.warning("insufficient_5m_data", 
-                             symbol=symbol, 
-                             data_points=len(df_5m))
+            # Calcular limite otimizado (reduzido para evitar rate limiting)
+            # Para 4h com 13 candles: 13 * 48 = 624 pontos de 5min
+            # Adicionar margem de segurança reduzida
+            required_points = 13 * 48  # 624 pontos
+            safety_margin = 50  # Margem reduzida
+            optimal_limit = min(required_points + safety_margin, 200)  # Limite máximo da API
+            
+            # Obter dados base de 5 minutos
+            df_5m = await self.exchange.get_klines(symbol, "5m", limit=optimal_limit)
+            
+            if df_5m.empty:
+                logger.warning("no_5m_data", symbol=symbol)
                 return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
             
-            # Construir timeframes customizados
-            df_2h = self.build_custom_candles(df_5m, 
-                                            self.timeframe_blocks["2h"], 
-                                            13)  # 2h
+            # Adaptar construção baseada nos dados disponíveis
+            available_points = len(df_5m)
             
-            df_4h = self.build_custom_candles(df_5m, 
-                                            self.timeframe_blocks["4h"], 
-                                            13)  # 4h
+            # Construir timeframes com dados disponíveis
+            if available_points >= 48:  # Mínimo para 4h
+                # Ajustar número de candles baseado nos dados disponíveis
+                max_4h_candles = min(13, available_points // 48)
+                max_2h_candles = min(13, available_points // 24)
+                
+                df_4h = self.build_custom_candles(df_5m, 
+                                                self.timeframe_blocks["4h"], 
+                                                max_4h_candles)
+                
+                df_2h = self.build_custom_candles(df_5m, 
+                                                self.timeframe_blocks["2h"], 
+                                                max_2h_candles)
+            else:
+                # Dados insuficientes para 4h, tentar apenas 2h
+                if available_points >= 24:
+                    max_2h_candles = min(13, available_points // 24)
+                    df_2h = self.build_custom_candles(df_5m, 
+                                                    self.timeframe_blocks["2h"], 
+                                                    max_2h_candles)
+                    df_4h = pd.DataFrame()
+                else:
+                    df_2h = pd.DataFrame()
+                    df_4h = pd.DataFrame()
+            
+            result = (df_2h, df_4h, df_5m)
+            
+            # Cache o resultado
+            if not hasattr(self, '_multi_cache'):
+                self._multi_cache = {}
+            self._multi_cache[cache_key] = {
+                'data': result,
+                'timestamp': time.time()
+            }
             
             logger.info("multi_timeframe_data_retrieved",
                        symbol=symbol,
                        df_5m_points=len(df_5m),
                        df_2h_points=len(df_2h),
-                       df_4h_points=len(df_4h))
+                       df_4h_points=len(df_4h),
+                       optimal_limit=optimal_limit,
+                       available_points=available_points)
             
-            return df_2h, df_4h, df_5m
+            return result
             
         except Exception as e:
             logger.log_error(e, context=f"Multi-timeframe data for {symbol}")
@@ -181,22 +225,39 @@ class TimeframeManager:
     
     async def get_single_timeframe(self, symbol: str, timeframe: str) -> pd.DataFrame:
         """
-        Obtém dados de um timeframe específico
+        Obtém dados de um timeframe específico otimizado para rate limiting
         Suporta tanto padrão (1m, 5m, 1h) quanto customizado (2h, 4h)
         """
         try:
             # Timeframes padrão da exchange
             if timeframe in ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"]:
+                # Usar limite reduzido para evitar rate limiting
                 return await self.exchange.get_klines(symbol, timeframe, limit=100)
             
             # Timeframes customizados
             if timeframe in self.timeframe_blocks:
-                df_5m = await self.exchange.get_klines(symbol, "5m", limit=650)
+                # Calcular limite otimizado baseado no timeframe
+                block_size = self.timeframe_blocks[timeframe]
+                required_points = 13 * block_size  # 13 candles
+                optimal_limit = min(required_points + 20, 200)  # Margem menor + limite API
+                
+                df_5m = await self.exchange.get_klines(symbol, "5m", limit=optimal_limit)
                 if df_5m.empty:
                     return pd.DataFrame()
                 
-                block_size = self.timeframe_blocks[timeframe]
-                return self.build_custom_candles(df_5m, block_size, 13)
+                # Ajustar número de candles baseado nos dados disponíveis
+                available_points = len(df_5m)
+                max_candles = min(13, available_points // block_size)
+                
+                if max_candles > 0:
+                    return self.build_custom_candles(df_5m, block_size, max_candles)
+                else:
+                    logger.warning("insufficient_data_for_timeframe", 
+                                  symbol=symbol, 
+                                  timeframe=timeframe,
+                                  available_points=available_points,
+                                  required_points=required_points)
+                    return pd.DataFrame()
             
             logger.warning("unsupported_timeframe", timeframe=timeframe)
             return pd.DataFrame()

@@ -51,10 +51,19 @@ class BingXExchangeManager:
         if not hasattr(self, 'semaphore'):
             self.semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
 
-        # Cache layers
+        # Cache layers inteligente multi-camada
         self._symbols_cache: Dict[str, Any] = {}
         self._price_cache: Dict[str, Tuple[float, float]] = {}  # (price, timestamp)
         self._klines_cache: Dict[str, Tuple[pd.DataFrame, float]] = {}
+        
+        # Cache TTLs específicos por tipo de dados (otimizado para rate limiting)
+        self._cache_ttls = {
+            "symbols": 7200,     # 2 horas (símbolos mudam raramente)
+            "prices": 15,        # 15 segundos (preços mudam rapidamente mas cache mais curto)
+            "klines": 600,       # 10 minutos (candles históricos - TTL mais longo)
+            "server_time": 120,  # 2 minutos (tempo do servidor)
+            "exchange_info": 3600 # 1 hora (info da exchange)
+        }
         
         # Rate limiting inteligente
         self.rate_metrics = RateLimitMetrics()
@@ -63,6 +72,10 @@ class BingXExchangeManager:
         # Performance monitoring
         self.api_calls_count = 0
         self.cache_hits = 0
+        
+        # Batch processing para reduzir chamadas
+        self._pending_price_requests = {}
+        self._price_batch_timer = None
         
         logger.info("exchange_manager_initialized", 
                    mode=settings.trading_mode,
@@ -178,7 +191,7 @@ class BingXExchangeManager:
         ).hexdigest()
     
     async def _calculate_smart_delay(self) -> float:
-        """Calcula delay inteligente baseado em performance histórica"""
+        """Calcula delay inteligente adaptativo baseado em performance da API"""
         current_time = time.time()
         
         # Limpar histórico antigo (últimos 60s)
@@ -186,36 +199,102 @@ class BingXExchangeManager:
                current_time - self.request_history[0]["timestamp"] > 60):
             self.request_history.popleft()
         
-        # Check for recent rate limit errors (last 30 seconds)
-        recent_rate_limits = sum(1 for req in self.request_history 
-                                if req.get("is_rate_limit", False) and 
-                                current_time - req["timestamp"] < 30)
-        
-        # Analisar taxa de erro recente (excluding rate limits)
-        recent_errors = sum(1 for req in self.request_history 
-                           if not req["success"] and not req.get("is_rate_limit", False))
-        error_rate = recent_errors / max(len(self.request_history), 1)
-        
-        # Much more aggressive rate limiting
-        base_delay = 1.0  # Increased from 0.2 to 1.0 (1000ms base)
-        
-        # Ultra-aggressive backoff for recent rate limits
-        if recent_rate_limits > 0:
-            base_delay *= (5 + recent_rate_limits * 2)  # 5x+ multiplier for rate limits
-            logger.warning(f"Rate limit detected. Increased delay to {base_delay:.2f}s")
-        elif error_rate > 0.05:  # > 5% error rate
-            base_delay *= (1 + error_rate * 5)
-        elif self.rate_metrics.consecutive_successes > 10:
-            base_delay *= 0.9  # Very conservative reduction
-        
-        # Ultra-conservative burst control
+        # Análise de padrões de resposta da API nos últimos 30s
+        recent_window = 30
         recent_requests = [req for req in self.request_history 
-                          if current_time - req["timestamp"] < 2.0]  # 2 second window
+                          if current_time - req["timestamp"] < recent_window]
         
-        if len(recent_requests) >= 1:  # Only 1 request per 2 seconds
-            base_delay *= 5  # Much higher multiplier
+        if not recent_requests:
+            return 1.2  # Delay padrão inicial mais conservador
         
-        return max(1.0, min(30.0, base_delay))  # Much higher min/max delays
+        # Métricas de performance da API
+        recent_rate_limits = sum(1 for req in recent_requests 
+                                if req.get("is_rate_limit", False))
+        recent_errors = sum(1 for req in recent_requests 
+                           if not req["success"] and not req.get("is_rate_limit", False))
+        recent_successes = sum(1 for req in recent_requests if req["success"])
+        
+        # Calcular taxa de sucesso e tempo de resposta médio
+        success_rate = recent_successes / len(recent_requests) if recent_requests else 0
+        avg_response_time = sum(req["duration"] for req in recent_requests) / len(recent_requests)
+        
+        # Delay base adaptativo baseado na performance (mais conservador para klines)
+        base_delay = 1.2  # Mais conservador para evitar rate limiting
+        
+        # Adaptação baseada em rate limits (mais agressiva)
+        if recent_rate_limits > 0:
+            # Backoff exponencial baseado na frequência de rate limits
+            rate_limit_multiplier = min(10, 2 ** recent_rate_limits)  # Max 10x
+            base_delay *= rate_limit_multiplier
+            logger.warning(f"Rate limits detected ({recent_rate_limits}). Delay increased to {base_delay:.2f}s")
+        
+        # Adaptação baseada em erros (excluding rate limits)
+        elif recent_errors > 0:
+            error_rate = recent_errors / len(recent_requests)
+            if error_rate > 0.1:  # >10% error rate
+                base_delay *= (1 + error_rate * 3)  # Moderate increase
+                logger.info(f"Error rate {error_rate:.1%}. Delay adjusted to {base_delay:.2f}s")
+        
+        # Adaptação baseada em tempo de resposta
+        elif avg_response_time > 1.0:  # >1s response time
+            response_multiplier = min(2.0, avg_response_time / 0.5)  # Scale with response time
+            base_delay *= response_multiplier
+            logger.info(f"Slow API response ({avg_response_time:.2f}s). Delay adjusted to {base_delay:.2f}s")
+        
+        # Otimização para alta performance (reduzir delay quando tudo está funcionando bem)
+        elif success_rate > 0.95 and avg_response_time < 0.5 and self.rate_metrics.consecutive_successes > 5:
+            base_delay *= 0.8  # Otimização agressiva quando API está performando bem
+            logger.debug(f"API performing well. Delay optimized to {base_delay:.2f}s")
+        
+        # Controle de burst adaptativo
+        burst_window = 5  # Últimos 5 segundos
+        burst_requests = [req for req in recent_requests 
+                         if current_time - req["timestamp"] < burst_window]
+        
+        # Limite de burst baseado na performance atual
+        max_burst = 3 if success_rate > 0.9 else 2 if success_rate > 0.8 else 1
+        
+        if len(burst_requests) >= max_burst:
+            burst_multiplier = min(3.0, len(burst_requests) / max_burst)
+            base_delay *= burst_multiplier
+            logger.debug(f"Burst control active. {len(burst_requests)} requests in {burst_window}s")
+        
+        # Limites dinâmicos baseados no contexto
+        min_delay = 0.3 if success_rate > 0.95 else 0.5  # Minimum mais agressivo quando tudo está bem
+        max_delay = 15.0 if recent_rate_limits == 0 else 30.0  # Maximum mais baixo se não há rate limits
+        
+        final_delay = max(min_delay, min(max_delay, base_delay))
+        
+        # Update metrics para próxima iteração
+        self.rate_metrics.current_delay = final_delay
+        
+        return final_delay
+    
+    def _is_cache_valid(self, cache_key: str, cache_type: str, cache_data: Dict) -> bool:
+        """Verifica se cache é válido baseado no TTL específico do tipo"""
+        if not cache_data or "timestamp" not in cache_data:
+            return False
+            
+        ttl = self._cache_ttls.get(cache_type, settings.cache_ttl_seconds)
+        age = time.time() - cache_data["timestamp"]
+        return age < ttl
+    
+    def _get_from_cache(self, cache_key: str, cache_type: str, cache_dict: Dict) -> Optional[Any]:
+        """Recupera dados do cache se válidos"""
+        if cache_key in cache_dict:
+            cache_data = cache_dict[cache_key]
+            if self._is_cache_valid(cache_key, cache_type, cache_data):
+                self.cache_hits += 1
+                logger.debug(f"Cache hit for {cache_key} (type: {cache_type})")
+                return cache_data.get("data")
+        return None
+    
+    def _set_cache(self, cache_key: str, data: Any, cache_dict: Dict) -> None:
+        """Armazena dados no cache com timestamp"""
+        cache_dict[cache_key] = {
+            "data": data,
+            "timestamp": time.time()
+        }
     
     async def _make_request(self, endpoint: str, params: Dict = None, 
                            method: str = "GET") -> Dict[str, Any]:
@@ -378,36 +457,42 @@ class BingXExchangeManager:
             self.rate_metrics.avg_response_time = total_duration / len(self.request_history)
     
     async def get_futures_symbols(self) -> List[str]:
-        """Obtém lista de símbolos do mercado futuro com cache"""
+        """Obtém lista de símbolos do mercado futuro com cache inteligente otimizado"""
         cache_key = "futures_symbols"
-        cache_ttl = 3600  # 1 hora
         
-        # Verificar cache
-        if (cache_key in self._symbols_cache and 
-            time.time() - self._symbols_cache[cache_key]["timestamp"] < cache_ttl):
-            self.cache_hits += 1
-            return self._symbols_cache[cache_key]["data"]
+        # Verificar cache inteligente (TTL mais longo para símbolos)
+        cached_data = self._get_from_cache(cache_key, "symbols", self._symbols_cache)
+        if cached_data:
+            return cached_data
+        
+        # Rate limiting extra para contracts endpoint
+        await asyncio.sleep(0.5)  # Delay extra para endpoint pesado
         
         # Buscar da API
         endpoint = f"{self.futures_path}/quote/contracts"
-        data = await self._make_request(endpoint)
         
-        if data.get("code") != 0:
-            logger.error("failed_to_fetch_symbols", error=data.get("msg"))
-            return []
-        
-        # Filtrar símbolos válidos
-        symbols = [item["symbol"] for item in data.get("data", [])]
-        valid_symbols = [s for s in symbols if s.endswith("-USDT")]
-        
-        # Atualizar cache
-        self._symbols_cache[cache_key] = {
-            "data": valid_symbols,
-            "timestamp": time.time()
-        }
-        
-        logger.info("symbols_fetched", count=len(valid_symbols))
-        return valid_symbols
+        try:
+            data = await self._make_request(endpoint)
+            
+            if data.get("code") != 0:
+                logger.error("failed_to_fetch_symbols", error=data.get("msg"))
+                # Fallback para símbolos configurados para evitar novas chamadas
+                return settings.allowed_symbols
+            
+            # Filtrar símbolos válidos
+            symbols = [item["symbol"] for item in data.get("data", [])]
+            valid_symbols = [s for s in symbols if s.endswith("-USDT")]
+            
+            # Atualizar cache inteligente
+            self._set_cache(cache_key, valid_symbols, self._symbols_cache)
+            
+            logger.info("symbols_fetched", count=len(valid_symbols))
+            return valid_symbols
+            
+        except Exception as e:
+            logger.log_error(e, context="Fetching futures symbols")
+            # Fallback para símbolos configurados
+            return settings.allowed_symbols
     
     async def get_exchange_info(self) -> Dict[str, Any]:
         """Obtém informações da exchange e símbolos disponíveis"""
@@ -429,20 +514,19 @@ class BingXExchangeManager:
             return {"symbols": [], "timezone": "UTC", "serverTime": int(time.time() * 1000)}
     
     async def get_ticker(self, symbol: str) -> Dict[str, Any]:
-        """Obtém ticker (preço atual) de um símbolo"""
+        """Obtém ticker (preço atual) de um símbolo com cache otimizado"""
+        # Reutilizar get_latest_price que já tem cache
         try:
-            endpoint = f"{self.futures_path}/quote/price"
-            params = {"symbol": symbol}
+            price = await self.get_latest_price(symbol)
             
-            data = await self._make_request(endpoint, params)
-            
-            if data and "data" in data:
+            if price and price > 0:
                 return {
                     "symbol": symbol,
-                    "price": data["data"].get("price", "0"),
-                    "time": data["data"].get("time", int(time.time() * 1000))
+                    "price": str(price),
+                    "time": int(time.time() * 1000)
                 }
             
+            # Fallback se get_latest_price falhar
             return {"symbol": symbol, "price": "0", "time": int(time.time() * 1000)}
             
         except Exception as e:
@@ -483,18 +567,19 @@ class BingXExchangeManager:
             return None
     
     async def get_klines(self, symbol: str, interval: str = "5m", 
-                        limit: int = 500) -> pd.DataFrame:
-        """Obtém dados de candlesticks com cache otimizado"""
+                        limit: int = 200) -> pd.DataFrame:
+        """Obtém dados de candlesticks com cache inteligente otimizado para rate limiting"""
+        # Limitar o limit máximo para evitar rate limiting
+        limit = min(limit, 200)  # BingX geralmente permite até 200 por request
+        
         cache_key = f"{symbol}_{interval}_{limit}"
-        cache_ttl = settings.cache_ttl_seconds
         
-        # Verificar cache
-        if (cache_key in self._klines_cache and 
-            time.time() - self._klines_cache[cache_key][1] < cache_ttl):
-            self.cache_hits += 1
-            return self._klines_cache[cache_key][0]
+        # Verificar cache inteligente (TTL mais longo para klines)
+        cached_data = self._get_from_cache(cache_key, "klines", self._klines_cache)
+        if cached_data is not None:
+            return cached_data
         
-        # Buscar da API
+        # Buscar da API com rate limiting extra conservador
         endpoint = f"{self.futures_path}/quote/klines"
         params = {
             "symbol": symbol,
@@ -502,9 +587,17 @@ class BingXExchangeManager:
             "limit": limit
         }
         
+        # Delay extra para klines (endpoint mais pesado)
+        await asyncio.sleep(0.2)  # 200ms extra para klines
+        
         data = await self._make_request(endpoint, params)
         
         if data.get("code") != 0:
+            logger.warning("klines_request_failed", 
+                          symbol=symbol, 
+                          interval=interval, 
+                          limit=limit,
+                          error=data.get("msg", "Unknown error"))
             return pd.DataFrame()
         
         # Processar dados
@@ -526,46 +619,57 @@ class BingXExchangeManager:
         # Timezone local (UTC+3)
         df["timestamp"] = df["timestamp"].dt.tz_convert("Etc/GMT-3")
         
-        # Atualizar cache
-        self._klines_cache[cache_key] = (df, time.time())
+        # Atualizar cache inteligente com TTL mais longo
+        self._set_cache(cache_key, df, self._klines_cache)
+        
+        logger.debug("klines_retrieved", 
+                    symbol=symbol, 
+                    interval=interval, 
+                    limit=limit,
+                    data_points=len(df))
         
         return df
     
     async def get_latest_price(self, symbol: str) -> Optional[float]:
-        """Obtém preço mais recente com cache agressivo"""
-        cache_ttl = 5  # 5 segundos para preços
+        """Obtém preço mais recente com cache inteligente otimizado"""
+        # Verificar cache inteligente (TTL reduzido para preços mais frescos)
+        cached_data = self._get_from_cache(symbol, "prices", self._price_cache)
+        if cached_data:
+            return cached_data
         
-        # Verificar cache
-        if symbol in self._price_cache:
-            price, timestamp = self._price_cache[symbol]
-            if time.time() - timestamp < cache_ttl:
-                self.cache_hits += 1
-                return price
+        # Rate limiting extra para price endpoint
+        await asyncio.sleep(0.1)  # Delay menor para preços
         
         # Buscar da API
         endpoint = f"{self.futures_path}/quote/price"
         params = {"symbol": symbol}
         
-        data = await self._make_request(endpoint, params)
-        
-        if data.get("code") != 0:
+        try:
+            data = await self._make_request(endpoint, params)
+            
+            if data.get("code") != 0:
+                logger.warning("failed_to_fetch_price", 
+                             symbol=symbol, 
+                             error=data.get("msg"))
+                return None
+            
+            price = float(data.get("data", {}).get("price", 0))
+            
+            # Atualizar cache inteligente
+            self._set_cache(symbol, price, self._price_cache)
+            
+            logger.debug("price_fetched", symbol=symbol, price=price)
+            return price
+            
+        except Exception as e:
+            logger.log_error(e, context=f"Fetching price for {symbol}")
             return None
-        
-        price = float(data.get("data", {}).get("price", 0))
-        
-        # Atualizar cache
-        self._price_cache[symbol] = (price, time.time())
-        
-        return price
     
     async def place_order(self, order: Order) -> OrderResult:
         """Executa ordem com suporte dual mode"""
-        # Em modo demo, simular execução
-        if settings.trading_mode == "demo":
-            return await self._simulate_order(order)
-        
-        # Modo real - executar na exchange
-        return await self._execute_real_order(order)
+        # Tanto em modo demo quanto real, enviar para exchange
+        # Modo demo usa VST (Virtual USDT), modo real usa USDT
+        return await self._execute_order_on_exchange(order)
     
     async def _simulate_order(self, order: Order) -> OrderResult:
         """Simula execução de ordem em modo demo (VST)"""
@@ -589,8 +693,8 @@ class BingXExchangeManager:
             commission=0.0  # Sem comissão em demo
         )
     
-    async def _execute_real_order(self, order: Order) -> OrderResult:
-        """Executa ordem real na exchange"""
+    async def _execute_order_on_exchange(self, order: Order) -> OrderResult:
+        """Executa ordem na exchange (VST em demo, USDT em real)"""
         endpoint = f"{self.futures_path}/trade/order"
         
         # Preparar parâmetros
@@ -616,6 +720,14 @@ class BingXExchangeManager:
         if settings.bingx_secret_key:
             query_string = "&".join([f"{k}={v}" for k, v in params.items()])
             params["signature"] = self._generate_signature(query_string)
+        
+        # Log do tipo de ordem baseado no modo
+        mode_msg = "VST (Virtual USDT)" if settings.trading_mode == "demo" else "USDT (Real)"
+        logger.info(f"executing_order_on_exchange", 
+                   symbol=order.symbol, 
+                   side=order.side.value,
+                   mode=mode_msg,
+                   quantity=order.quantity)
         
         # Executar ordem
         data = await self._make_request(endpoint, params, method="POST")
@@ -666,16 +778,88 @@ class BingXExchangeManager:
         return positions
     
     def get_performance_metrics(self) -> Dict[str, Any]:
-        """Retorna métricas de performance da API"""
+        """Retorna métricas de performance da API com análise adaptativa"""
+        current_time = time.time()
+        
+        # Análise dos últimos 30s
+        recent_requests = [req for req in self.request_history 
+                          if current_time - req["timestamp"] < 30]
+        
+        # Métricas detalhadas
+        recent_rate_limits = sum(1 for req in recent_requests 
+                                if req.get("is_rate_limit", False))
+        recent_errors = sum(1 for req in recent_requests 
+                           if not req["success"] and not req.get("is_rate_limit", False))
+        recent_successes = sum(1 for req in recent_requests if req["success"])
+        
+        # Calcular métricas de performance
+        recent_success_rate = (recent_successes / len(recent_requests) * 100) if recent_requests else 100
+        recent_avg_response = (sum(req["duration"] for req in recent_requests) / len(recent_requests)) if recent_requests else 0
+        
+        # Análise de endpoints mais usados
+        endpoint_stats = {}
+        for req in recent_requests:
+            endpoint = req["endpoint"]
+            if endpoint not in endpoint_stats:
+                endpoint_stats[endpoint] = {"calls": 0, "success": 0, "avg_time": 0}
+            endpoint_stats[endpoint]["calls"] += 1
+            if req["success"]:
+                endpoint_stats[endpoint]["success"] += 1
+            endpoint_stats[endpoint]["avg_time"] += req["duration"]
+        
+        # Finalizar estatísticas de endpoints
+        for endpoint in endpoint_stats:
+            stats = endpoint_stats[endpoint]
+            stats["success_rate"] = (stats["success"] / stats["calls"]) * 100
+            stats["avg_time"] = (stats["avg_time"] / stats["calls"]) * 1000  # ms
+        
         return {
-            "api_calls": self.api_calls_count,
+            # Métricas gerais
+            "api_calls_total": self.api_calls_count,
             "cache_hits": self.cache_hits,
             "cache_hit_ratio": (self.cache_hits / max(1, self.api_calls_count)) * 100,
-            "success_rate": self.rate_metrics.success_rate,
-            "avg_response_time": self.rate_metrics.avg_response_time * 1000,  # ms
-            "current_delay": self.rate_metrics.current_delay * 1000,  # ms
-            "consecutive_successes": self.rate_metrics.consecutive_successes,
-            "error_count": self.rate_metrics.errors_count,
             "mode": settings.trading_mode,
-            "currency": "VST" if settings.trading_mode == "demo" else "USDT"
+            "currency": "VST" if settings.trading_mode == "demo" else "USDT",
+            
+            # Métricas de rate limiting
+            "current_delay_ms": self.rate_metrics.current_delay * 1000,
+            "consecutive_successes": self.rate_metrics.consecutive_successes,
+            "consecutive_failures": self.rate_metrics.consecutive_failures,
+            "circuit_breaker_open": self.rate_metrics.circuit_breaker_open,
+            
+            # Métricas recentes (últimos 30s)
+            "recent_requests": len(recent_requests),
+            "recent_success_rate": recent_success_rate,
+            "recent_avg_response_ms": recent_avg_response * 1000,
+            "recent_rate_limits": recent_rate_limits,
+            "recent_errors": recent_errors,
+            
+            # Métricas históricas
+            "total_success_rate": self.rate_metrics.success_rate,
+            "total_avg_response_ms": self.rate_metrics.avg_response_time * 1000,
+            "total_errors": self.rate_metrics.errors_count,
+            "total_requests": self.rate_metrics.requests_count,
+            
+            # Análise de endpoints
+            "endpoint_stats": endpoint_stats,
+            
+            # Indicadores de performance
+            "performance_status": self._get_performance_status(recent_success_rate, recent_avg_response, recent_rate_limits),
+            "optimization_active": recent_success_rate > 95 and recent_avg_response < 0.5,
+            "rate_limit_protection": recent_rate_limits > 0
         }
+    
+    def _get_performance_status(self, success_rate: float, avg_response: float, rate_limits: int) -> str:
+        """Determina o status de performance da API"""
+        if rate_limits > 0:
+            return "RATE_LIMITED"
+        elif success_rate < 80:
+            return "DEGRADED"
+        elif success_rate < 95:
+            return "MODERATE"
+        elif avg_response > 1.0:
+            return "SLOW"
+        elif success_rate > 98 and avg_response < 0.3:
+            return "EXCELLENT"
+        else:
+            return "GOOD"

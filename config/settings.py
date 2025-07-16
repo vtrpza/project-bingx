@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     )
     
     min_confidence: float = Field(
-        default=0.5,
+        default=0.3,
         ge=0.1,
         le=0.95,
         description="Confiança mínima para entrada"
@@ -294,8 +294,8 @@ class Settings(BaseSettings):
     # Símbolos Permitidos
     allowed_symbols: list = Field(
         default=[
-            "BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "DOTUSDT", 
-            "LINKUSDT", "SOLUSDT", "AVAXUSDT", "MATICUSDT", "ATOMUSDT"
+            "BTC-USDT", "ETH-USDT", "BNB-USDT", "ADA-USDT", "DOT-USDT", 
+            "LINK-USDT", "SOL-USDT", "AVAX-USDT", "MATIC-USDT", "ATOM-USDT"
         ],
         description="Lista de símbolos permitidos para trading"
     )

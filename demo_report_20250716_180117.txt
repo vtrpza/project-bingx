@@ -1,0 +1,27 @@
+
+🎯 RELATÓRIO DE PROVA DE CONCEITO - 2025-07-16 18:01:17
+======================================================================
+
+📊 MÉTRICAS GERAIS:
+• Total de Scans: 5
+• Sinais Gerados: 0
+• Sinais Executados: 0
+• Sinais Rejeitados: 0
+• Taxa de Sucesso: 0.0%
+
+💹 TRADING:
+• Posições Abertas: 0
+• Posições Fechadas: 0
+• PnL Total: 0.00 USDT
+• Confiança Média: 0.00
+
+⚡ PERFORMANCE:
+• Total API Calls: 4
+• Tempo Médio Resposta: 9758ms
+
+🔍 FLUXO DETALHADO:
+• 18:00:21 ✅ SCANNING BNBUSDT 
+• 18:00:33 ❌ ANALYZING BNBUSDT (12095ms)
+• 18:00:35 ✅ SCANNING SOLUSDT 
+• 18:00:54 ❌ ANALYZING SOLUSDT (19361ms)
+• 18:00:56 ✅ SCANNING ADAUSDT 
