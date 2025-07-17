@@ -20,7 +20,7 @@
 ## 🚀 Deploy Automático (2 cliques)
 
 ### Opção 1: Deploy Direto (Recomendado)
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/vtrpza/projeto-bingx)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/vtrpza/project-bingx)
 
 ### Opção 2: Deploy Manual
 
