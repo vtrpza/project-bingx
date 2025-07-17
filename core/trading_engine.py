@@ -215,7 +215,8 @@ class TradingEngine:
             
             logger.info("parallel_scan_started", 
                         total_symbols=len(all_symbols),
-                        valid_symbols=len(valid_symbols))
+                        valid_symbols=len(valid_symbols),
+                        allowed_symbols=settings.allowed_symbols[:10])  # Primeiros 10 símbolos permitidos
             
             # Sequential analysis with immediate execution
             executed_signals = await self._sequential_symbol_analysis_with_immediate_execution(valid_symbols)
@@ -323,16 +324,37 @@ class TradingEngine:
             logger.warning("Nenhum símbolo permitido configurado. O scan não será executado.")
             return []
 
+        # Se symbols está vazio (rate limiting), usar símbolos permitidos como fallback
+        if not symbols:
+            logger.warning("symbol_list_empty_using_fallback", 
+                          reason="possible_rate_limiting",
+                          fallback_symbols=settings.allowed_symbols[:5])
+            
+            # Converter formato BTCUSDT para BTC/USDT
+            fallback_symbols = []
+            for symbol in settings.allowed_symbols[:5]:  # Primeiros 5 símbolos
+                if symbol.endswith('USDT'):
+                    base = symbol[:-4]  # Remove USDT
+                    fallback_symbols.append(f"{base}/USDT")
+            
+            logger.info("symbol_filtering_completed",
+                        total_symbols=0,
+                        valid_symbols=len(fallback_symbols),
+                        fallback_used=True)
+            
+            return fallback_symbols
+
         # A lista `symbols` já está no formato correto (ex: 'BTC/USDT')
-        # A lista `settings.allowed_symbols` está no formato 'BTCUSDT'
+        # A lista `settings.allowed_symbols` está no formato 'BTC-USDT'
         # Precisamos comparar os dois formatos.
 
         allowed_set = set(settings.allowed_symbols)
-        valid_symbols = [s for s in symbols if s.replace('/', '').replace(':USDT', '') in allowed_set]
+        valid_symbols = [s for s in symbols if s.replace('/', '-') in allowed_set]
 
         logger.info("symbol_filtering_completed",
                     total_symbols=len(symbols),
-                    valid_symbols=len(valid_symbols))
+                    valid_symbols=len(valid_symbols),
+                    fallback_used=False)
 
         return valid_symbols
 
@@ -456,7 +478,7 @@ class TradingEngine:
                 log_analysis_event(symbol, confidence, success=False, duration_ms=analysis_duration)
 
                 if not signal:  # Redundant check, but keeps original logic flow
-                    logger.debug("no_signal_generated",
+                    logger.info("no_signal_generated",
                                  symbol=symbol,
                                  reason="conditions_not_met")
 
@@ -529,7 +551,7 @@ class TradingEngine:
             klines_5m = await self.exchange.get_klines(symbol, "5m", 800)
             
             if klines_5m is None or (hasattr(klines_5m, 'empty') and klines_5m.empty) or len(klines_5m) < 100:
-                logger.debug("klines_insufficient_data", symbol=symbol, klines_len=len(klines_5m) if klines_5m else 0)
+                logger.info("klines_insufficient_data", symbol=symbol, klines_len=len(klines_5m) if klines_5m else 0)
                 return None
             
             df_5m = pd.DataFrame(klines_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -589,6 +611,11 @@ class TradingEngine:
                            side=signal.side, 
                            confidence=signal.confidence,
                            entry_type=getattr(signal, "entry_type", "primary"))
+            else:
+                logger.info("signal_analysis_completed_no_signal", 
+                           symbol=symbol,
+                           conditions_2h_summary=f"rsi_ok={conditions_2h.get('rsi_ok', False)}",
+                           conditions_4h_summary=f"rsi_ok={conditions_4h.get('rsi_ok', False)}, distance_ok={conditions_4h.get('distance_ok', False)}, long_cross={conditions_4h.get('long_cross', False)}, short_cross={conditions_4h.get('short_cross', False)}")
             
             return signal
             
