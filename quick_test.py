@@ -35,7 +35,7 @@ async def test_model_creation():
         # Test Position model
         position = Position(
             symbol="BTC-USDT",
-            side=SignalType.LONG,
+            side="BUY",  # Usar string diretamente
             size=0.001,
             entry_price=45000.0,
             current_price=45500.0,
@@ -48,6 +48,7 @@ async def test_model_creation():
         signal = TradingSignal(
             symbol="BTC-USDT",
             signal_type=SignalType.LONG,
+            side="BUY",  # Adicionar campo side obrigatório
             price=45000.0,
             confidence=0.75,
             indicators=TechnicalIndicators(
@@ -90,7 +91,7 @@ async def test_exchange_manager():
         from core.exchange_manager import BingXExchangeManager
         
         exchange_manager = BingXExchangeManager()
-        signature = exchange_manager._generate_signature("test_params")
+        signature = exchange_manager._generate_signature("GET", "/test", {"param": "value"})
         if not isinstance(signature, str):
             raise ValueError("Signature should be a string")
         

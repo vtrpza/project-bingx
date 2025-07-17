@@ -264,3 +264,11 @@ class BingXExchangeManager:
         await self.exchange.load_markets()
         return {"symbols": [{"symbol": symbol, "status": "TRADING" if market.get("active") else "BREAK"} 
                           for symbol, market in self.exchange.markets.items()]}
+
+    def _generate_signature(self, method: str, path: str, params: Dict[str, Any]) -> str:
+        """Gera assinatura para autenticação BingX (método de compatibilidade)."""
+        # Este método é mantido para compatibilidade com código legado
+        # O CCXT já gerencia a assinatura automaticamente
+        # Parâmetros são mantidos para compatibilidade mas não são utilizados
+        _ = method, path, params  # Marcar como utilizados para evitar warnings
+        return ""

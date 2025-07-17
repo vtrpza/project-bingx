@@ -461,6 +461,11 @@ async def get_demo_flow():
 
 
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for deployment"""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
 @app.get("/", response_class=HTMLResponse)
 async def demo_dashboard():
     """Simple dashboard for demo control and monitoring"""

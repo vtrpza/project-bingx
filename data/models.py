@@ -8,7 +8,7 @@ Mantém compatibilidade com o sistema atual.
 
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Literal
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, validator
 from enum import Enum
 
 
@@ -53,9 +53,10 @@ class MarketData(BaseModel):
     close: float = Field(gt=0, description="Preço de fechamento")
     volume: float = Field(ge=0, description="Volume")
     
-    @validator("high")
+    @field_validator("high")
+    @classmethod
     def validate_high(cls, v, values):
-        if "low" in values and v < values["low"]:
+        if hasattr(values, "low") and v < values.low:
             raise ValueError("High must be >= low")
         return v
 
