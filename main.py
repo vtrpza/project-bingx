@@ -111,6 +111,121 @@ class DemoLogHandler(logging.Handler):
                 })
         return flow_events[-50:]  # Últimos 50 eventos de fluxo
 
+    def get_technical_analysis_data(self):
+        """Extrai dados de análise técnica em tempo real"""
+        technical_data = {}
+        for log in self.records[-20:]:  # Últimos 20 logs
+            event = log.get('event', '')
+            symbol = log.get('symbol')
+            
+            if symbol and any(keyword in event.lower() for keyword in ['rsi', 'sma', 'analyze', 'indicator']):
+                if symbol not in technical_data:
+                    technical_data[symbol] = {
+                        'rsi': None,
+                        'sma': None,
+                        'price': None,
+                        'distance_percent': None,
+                        'last_analysis': log.get('timestamp'),
+                        'trend': None
+                    }
+                
+                # Extrair RSI
+                if 'rsi' in event.lower():
+                    technical_data[symbol]['rsi'] = log.get('rsi')
+                
+                # Extrair SMA
+                if 'sma' in event.lower():
+                    technical_data[symbol]['sma'] = log.get('sma')
+                
+                # Extrair preço atual
+                if log.get('price'):
+                    technical_data[symbol]['price'] = log.get('price')
+                
+                # Calcular distância percentual
+                if log.get('distance_to_pivot'):
+                    technical_data[symbol]['distance_percent'] = log.get('distance_to_pivot')
+                
+                # Extrair direção da tendência
+                if log.get('slope'):
+                    slope = log.get('slope', 0)
+                    technical_data[symbol]['trend'] = 'UP' if slope > 0 else 'DOWN' if slope < 0 else 'FLAT'
+                
+        return technical_data
+
+    def get_trading_signals_data(self):
+        """Extrai dados de sinais de trading"""
+        signals = []
+        for log in self.records[-30:]:  # Últimos 30 logs
+            event = log.get('event', '')
+            if any(keyword in event.lower() for keyword in ['signal', 'entry', 'primary', 'reentry']):
+                signals.append({
+                    'timestamp': log.get('timestamp'),
+                    'symbol': log.get('symbol'),
+                    'signal_type': log.get('signal_type'),
+                    'entry_type': log.get('entry_type', 'UNKNOWN'),
+                    'confidence': log.get('confidence'),
+                    'price': log.get('price'),
+                    'decision': 'EXECUTED' if 'executed' in event.lower() else 'GENERATED' if 'generated' in event.lower() else 'ANALYZED',
+                    'reason': event,
+                    'level': log.get('level')
+                })
+        return signals
+
+    def get_order_execution_data(self):
+        """Extrai dados de execução de ordens"""
+        orders = []
+        for log in self.records[-20:]:  # Últimos 20 logs
+            event = log.get('event', '')
+            if any(keyword in event.lower() for keyword in ['order', 'buy', 'sell', 'executed', 'filled']):
+                orders.append({
+                    'timestamp': log.get('timestamp'),
+                    'symbol': log.get('symbol'),
+                    'side': log.get('side'),
+                    'price': log.get('price'),
+                    'quantity': log.get('quantity'),
+                    'status': 'SUCCESS' if 'success' in event.lower() else 'FAILED' if 'failed' in event.lower() else 'PENDING',
+                    'execution_time': log.get('execution_time'),
+                    'error': log.get('error_message') if log.get('level') == 'error' else None,
+                    'event': event
+                })
+        return orders
+
+    def get_real_time_metrics(self):
+        """Calcula métricas em tempo real"""
+        total_scans = 0
+        signals_generated = 0
+        orders_executed = 0
+        orders_successful = 0
+        
+        for log in self.records:
+            event = log.get('event', '').lower()
+            
+            # Contar scans
+            if 'scan' in event:
+                total_scans += 1
+            
+            # Contar sinais gerados
+            if 'signal' in event and 'generated' in event:
+                signals_generated += 1
+            
+            # Contar ordens executadas
+            if 'order' in event and any(word in event for word in ['executed', 'placed', 'filled']):
+                orders_executed += 1
+                if 'success' in event:
+                    orders_successful += 1
+        
+        success_rate = (orders_successful / max(orders_executed, 1)) * 100
+        
+        return {
+            'total_scans': total_scans,
+            'signals_generated': signals_generated,
+            'orders_executed': orders_executed,
+            'orders_successful': orders_successful,
+            'success_rate': success_rate,
+            'active_symbols': len(self.get_technical_analysis_data()),
+            'last_update': datetime.now().isoformat()
+        }
+
 demo_log_handler = DemoLogHandler()
 
 def serialize_datetime(obj):
@@ -353,7 +468,11 @@ class DemoManager:
             "is_running": self.is_running,
             "logs": self.log_handler.get_logs(),
             "flow_summary": self.log_handler.get_flow_summary(),
-            "last_report": self.last_report, # To be updated by demo_runner if needed
+            "technical_analysis": self.log_handler.get_technical_analysis_data(),
+            "trading_signals": self.log_handler.get_trading_signals_data(),
+            "order_execution": self.log_handler.get_order_execution_data(),
+            "real_time_metrics": self.log_handler.get_real_time_metrics(),
+            "last_report": self.last_report,
             "total_logs": len(self.log_handler.get_logs())
         }
 
@@ -457,6 +576,54 @@ async def get_demo_flow():
         "total_flow_events": len(demo_manager.log_handler.get_flow_summary())
     }
 
+@app.get("/demo/technical-analysis")
+async def get_technical_analysis():
+    """Endpoint para dados de análise técnica em tempo real"""
+    if not demo_manager:
+        return {"status": "error", "message": "Demo manager not initialized."}
+    
+    return {
+        "technical_analysis": demo_manager.log_handler.get_technical_analysis_data(),
+        "is_running": demo_manager.is_running,
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.get("/demo/trading-signals")
+async def get_trading_signals():
+    """Endpoint para sinais de trading"""
+    if not demo_manager:
+        return {"status": "error", "message": "Demo manager not initialized."}
+    
+    return {
+        "trading_signals": demo_manager.log_handler.get_trading_signals_data(),
+        "is_running": demo_manager.is_running,
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.get("/demo/order-execution")
+async def get_order_execution():
+    """Endpoint para dados de execução de ordens"""
+    if not demo_manager:
+        return {"status": "error", "message": "Demo manager not initialized."}
+    
+    return {
+        "order_execution": demo_manager.log_handler.get_order_execution_data(),
+        "is_running": demo_manager.is_running,
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.get("/demo/metrics")
+async def get_real_time_metrics():
+    """Endpoint para métricas em tempo real"""
+    if not demo_manager:
+        return {"status": "error", "message": "Demo manager not initialized."}
+    
+    return {
+        "metrics": demo_manager.log_handler.get_real_time_metrics(),
+        "is_running": demo_manager.is_running,
+        "timestamp": datetime.now().isoformat()
+    }
+
 
 
 
@@ -497,34 +664,117 @@ async def demo_dashboard():
             .flow-price { color: #ff6b6b; }
             .button-group { margin-bottom: 10px; }
             .button-group button { margin-right: 5px; }
+            .section { margin-bottom: 30px; padding: 20px; border-radius: 8px; background-color: #2d2d2d; }
+            .control-row { display: flex; gap: 15px; align-items: center; margin-bottom: 10px; }
+            .control-row label { color: #d4d4d4; }
+            .control-row input { padding: 5px; border-radius: 3px; border: 1px solid #555; background-color: #1e1e1e; color: #d4d4d4; }
+            .status-row { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+            .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+            .metric-card { background-color: #1e1e1e; padding: 15px; border-radius: 5px; text-align: center; }
+            .metric-value { font-size: 24px; font-weight: bold; color: #00d4aa; }
+            .metric-label { font-size: 12px; color: #999; margin-top: 5px; }
+            .symbol-card { background-color: #1e1e1e; padding: 15px; border-radius: 5px; margin-bottom: 10px; }
+            .symbol-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+            .symbol-name { font-weight: bold; color: #569cd6; font-size: 16px; }
+            .symbol-time { color: #999; font-size: 12px; }
+            .indicator-row { display: flex; gap: 20px; margin-bottom: 5px; }
+            .indicator { display: flex; align-items: center; gap: 5px; }
+            .indicator-label { color: #999; font-size: 12px; }
+            .indicator-value { font-weight: bold; }
+            .indicator-value.up { color: #00d4aa; }
+            .indicator-value.down { color: #ff6b6b; }
+            .indicator-value.neutral { color: #ffd93d; }
+            .signal-item { background-color: #1e1e1e; padding: 10px; border-radius: 5px; margin-bottom: 8px; border-left: 4px solid #00d4aa; }
+            .signal-item.primary { border-left-color: #569cd6; }
+            .signal-item.reentry { border-left-color: #9cd656; }
+            .signal-item.failed { border-left-color: #ff6b6b; }
+            .signal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
+            .signal-type { font-weight: bold; padding: 2px 6px; border-radius: 3px; font-size: 11px; }
+            .signal-type.primary { background-color: #569cd6; color: white; }
+            .signal-type.reentry { background-color: #9cd656; color: black; }
+            .signal-confidence { color: #ffd93d; font-weight: bold; }
+            .signal-decision { font-size: 12px; color: #999; }
+            .order-item { background-color: #1e1e1e; padding: 10px; border-radius: 5px; margin-bottom: 8px; border-left: 4px solid #00d4aa; }
+            .order-item.failed { border-left-color: #ff6b6b; }
+            .order-item.pending { border-left-color: #ffd93d; }
+            .order-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
+            .order-side { font-weight: bold; padding: 2px 6px; border-radius: 3px; font-size: 11px; }
+            .order-side.buy { background-color: #00d4aa; color: white; }
+            .order-side.sell { background-color: #ff6b6b; color: white; }
+            .order-details { font-size: 12px; color: #999; }
+            .empty-state { text-align: center; color: #999; padding: 20px; }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>Controle do Robô de Trading de Demonstração</h1>
+            <h1>🎯 Dashboard de Monitoramento de Trading</h1>
             
-            <h2>Iniciar Demonstração</h2>
-            <p>Duração (segundos): <input type="number" id="duration" value="60"></p>
-            <p>Símbolos (separados por vírgula, ex: BTC-USDT,ETH-USDT): <input type="text" id="symbols" value="BTC-USDT,ETH-USDT"></p>
-            <button onclick="startDemo()">Iniciar Demonstração</button>
-            <p id="start-message"></p>
-
-            <h2>Status da Demonstração</h2>
-            <p>Status: <span id="demo-status" class="status-stopped">Parado</span></p>
-            <p>Total de Logs: <span id="total-logs">0</span></p>
-            <p>Eventos de Fluxo: <span id="total-flow-events">0</span></p>
-            <button onclick="getDemoStatus()">Atualizar Status</button>
-            
-            <h2>Fluxo de Trading (Resumo)</h2>
-            <div id="trading-flow"></div>
-            
-            <h2>Logs Detalhados</h2>
-            <div class="button-group">
-                <button onclick="toggleLogType('all')">Todos</button>
-                <button onclick="toggleLogType('flow')">Apenas Fluxo</button>
-                <button onclick="toggleLogType('errors')">Apenas Erros</button>
+            <!-- Seção de Controle -->
+            <div class="section">
+                <h2>🎮 Controle da Demonstração</h2>
+                <div class="control-row">
+                    <label>Duração (segundos): <input type="number" id="duration" value="60"></label>
+                    <label>Símbolos: <input type="text" id="symbols" value="BTC-USDT,ETH-USDT"></label>
+                    <button onclick="startDemo()">Iniciar Demo</button>
+                </div>
+                <div id="start-message"></div>
+                <div class="status-row">
+                    <span>Status: <span id="demo-status" class="status-stopped">Parado</span></span>
+                    <button onclick="getDemoStatus()">🔄 Atualizar</button>
+                </div>
             </div>
-            <pre id="demo-logs"></pre>
+
+            <!-- Seção de Métricas em Tempo Real -->
+            <div class="section">
+                <h2>📈 Métricas em Tempo Real</h2>
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-value" id="total-scans">0</div>
+                        <div class="metric-label">Scans Realizados</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="signals-generated">0</div>
+                        <div class="metric-label">Sinais Gerados</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="orders-executed">0</div>
+                        <div class="metric-label">Ordens Executadas</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="success-rate">0%</div>
+                        <div class="metric-label">Taxa de Sucesso</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Seção de Análise Técnica -->
+            <div class="section">
+                <h2>📊 Análise Técnica por Símbolo</h2>
+                <div id="technical-analysis"></div>
+            </div>
+
+            <!-- Seção de Sinais de Trading -->
+            <div class="section">
+                <h2>🎯 Sinais de Trading</h2>
+                <div id="trading-signals"></div>
+            </div>
+
+            <!-- Seção de Execução de Ordens -->
+            <div class="section">
+                <h2>📋 Execução de Ordens</h2>
+                <div id="order-execution"></div>
+            </div>
+            
+            <!-- Seção de Logs Detalhados -->
+            <div class="section">
+                <h2>📝 Logs Detalhados</h2>
+                <div class="button-group">
+                    <button onclick="toggleLogType('all')">Todos</button>
+                    <button onclick="toggleLogType('flow')">Apenas Fluxo</button>
+                    <button onclick="toggleLogType('errors')">Apenas Erros</button>
+                </div>
+                <pre id="demo-logs"></pre>
+            </div>
         </div>
 
         <script>
@@ -562,12 +812,17 @@ async def demo_dashboard():
                     statusElement.className = 'status-indicator status-stopped';
                 }
                 
-                // Atualizar contadores
-                document.getElementById('total-logs').textContent = data.total_logs || 0;
-                document.getElementById('total-flow-events').textContent = data.flow_summary ? data.flow_summary.length : 0;
+                // Atualizar métricas em tempo real
+                updateRealTimeMetrics(data.real_time_metrics);
                 
-                // Atualizar fluxo de trading
-                updateTradingFlow(data.flow_summary);
+                // Atualizar análise técnica
+                updateTechnicalAnalysis(data.technical_analysis);
+                
+                // Atualizar sinais de trading
+                updateTradingSignals(data.trading_signals);
+                
+                // Atualizar execução de ordens
+                updateOrderExecution(data.order_execution);
                 
                 // Armazenar logs para filtragem
                 allLogs = data.logs || [];
@@ -576,38 +831,128 @@ async def demo_dashboard():
                 updateLogsDisplay();
             }
             
-            function updateTradingFlow(flowSummary) {
-                const flowElement = document.getElementById('trading-flow');
-                flowElement.innerHTML = '';
+            function updateRealTimeMetrics(metrics) {
+                if (!metrics) return;
                 
-                if (!flowSummary || flowSummary.length === 0) {
-                    flowElement.innerHTML = '<p>Nenhum evento de fluxo detectado.</p>';
+                document.getElementById('total-scans').textContent = metrics.total_scans || 0;
+                document.getElementById('signals-generated').textContent = metrics.signals_generated || 0;
+                document.getElementById('orders-executed').textContent = metrics.orders_executed || 0;
+                document.getElementById('success-rate').textContent = `${metrics.success_rate?.toFixed(1) || 0}%`;
+            }
+            
+            function updateTechnicalAnalysis(technicalData) {
+                const container = document.getElementById('technical-analysis');
+                container.innerHTML = '';
+                
+                if (!technicalData || Object.keys(technicalData).length === 0) {
+                    container.innerHTML = '<div class="empty-state">Aguardando dados de análise técnica...</div>';
                     return;
                 }
                 
-                flowSummary.forEach(event => {
-                    const flowDiv = document.createElement('div');
-                    flowDiv.className = `flow-entry ${event.level}`;
+                Object.entries(technicalData).forEach(([symbol, data]) => {
+                    const symbolDiv = document.createElement('div');
+                    symbolDiv.className = 'symbol-card';
                     
-                    let flowContent = `
-                        <div>
-                            <strong>[${new Date(event.timestamp).toLocaleTimeString()}]</strong>
-                            ${event.symbol ? `<span class="flow-symbol">${event.symbol}</span>` : ''}
-                            ${event.entry_type ? `<span class="flow-type">[${event.entry_type}]</span>` : ''}
+                    const rsiClass = data.rsi > 70 ? 'down' : data.rsi < 30 ? 'up' : 'neutral';
+                    const trendClass = data.trend === 'UP' ? 'up' : data.trend === 'DOWN' ? 'down' : 'neutral';
+                    const distanceClass = data.distance_percent > 2 ? 'up' : data.distance_percent < -2 ? 'down' : 'neutral';
+                    
+                    symbolDiv.innerHTML = `
+                        <div class="symbol-header">
+                            <div class="symbol-name">${symbol}</div>
+                            <div class="symbol-time">${data.last_analysis ? new Date(data.last_analysis).toLocaleTimeString() : 'N/A'}</div>
                         </div>
-                        <div>${event.event}</div>
+                        <div class="indicator-row">
+                            <div class="indicator">
+                                <span class="indicator-label">RSI:</span>
+                                <span class="indicator-value ${rsiClass}">${data.rsi?.toFixed(1) || 'N/A'}</span>
+                            </div>
+                            <div class="indicator">
+                                <span class="indicator-label">Preço:</span>
+                                <span class="indicator-value">${data.price ? '$' + data.price.toFixed(2) : 'N/A'}</span>
+                            </div>
+                            <div class="indicator">
+                                <span class="indicator-label">SMA:</span>
+                                <span class="indicator-value">${data.sma ? '$' + data.sma.toFixed(2) : 'N/A'}</span>
+                            </div>
+                        </div>
+                        <div class="indicator-row">
+                            <div class="indicator">
+                                <span class="indicator-label">Distância:</span>
+                                <span class="indicator-value ${distanceClass}">${data.distance_percent ? data.distance_percent.toFixed(2) + '%' : 'N/A'}</span>
+                            </div>
+                            <div class="indicator">
+                                <span class="indicator-label">Trend:</span>
+                                <span class="indicator-value ${trendClass}">${data.trend || 'N/A'}</span>
+                            </div>
+                        </div>
                     `;
                     
-                    if (event.confidence) {
-                        flowContent += `<div><span class="flow-confidence">Confiança: ${event.confidence}</span></div>`;
-                    }
+                    container.appendChild(symbolDiv);
+                });
+            }
+            
+            function updateTradingSignals(signals) {
+                const container = document.getElementById('trading-signals');
+                container.innerHTML = '';
+                
+                if (!signals || signals.length === 0) {
+                    container.innerHTML = '<div class="empty-state">Nenhum sinal de trading detectado.</div>';
+                    return;
+                }
+                
+                signals.slice(-10).forEach(signal => {
+                    const signalDiv = document.createElement('div');
+                    const entryType = signal.entry_type?.toLowerCase() || 'unknown';
+                    signalDiv.className = `signal-item ${entryType}`;
                     
-                    if (event.price) {
-                        flowContent += `<div><span class="flow-price">Preço: ${event.price}</span></div>`;
-                    }
+                    signalDiv.innerHTML = `
+                        <div class="signal-header">
+                            <div>
+                                <span class="signal-type ${entryType}">${signal.entry_type || 'UNKNOWN'}</span>
+                                <strong>${signal.symbol || 'N/A'}</strong>
+                            </div>
+                            <div class="signal-confidence">Conf: ${signal.confidence || 'N/A'}</div>
+                        </div>
+                        <div class="signal-decision">${signal.decision || 'N/A'}: ${signal.reason || 'N/A'}</div>
+                        <div class="signal-decision">${new Date(signal.timestamp).toLocaleTimeString()}</div>
+                    `;
                     
-                    flowDiv.innerHTML = flowContent;
-                    flowElement.appendChild(flowDiv);
+                    container.appendChild(signalDiv);
+                });
+            }
+            
+            function updateOrderExecution(orders) {
+                const container = document.getElementById('order-execution');
+                container.innerHTML = '';
+                
+                if (!orders || orders.length === 0) {
+                    container.innerHTML = '<div class="empty-state">Nenhuma ordem executada.</div>';
+                    return;
+                }
+                
+                orders.slice(-8).forEach(order => {
+                    const orderDiv = document.createElement('div');
+                    const status = order.status?.toLowerCase() || 'unknown';
+                    orderDiv.className = `order-item ${status}`;
+                    
+                    orderDiv.innerHTML = `
+                        <div class="order-header">
+                            <div>
+                                <span class="order-side ${order.side?.toLowerCase() || 'unknown'}">${order.side || 'N/A'}</span>
+                                <strong>${order.symbol || 'N/A'}</strong>
+                            </div>
+                            <div class="order-details">${order.status || 'N/A'}</div>
+                        </div>
+                        <div class="order-details">
+                            Preço: ${order.price ? '$' + order.price.toFixed(2) : 'N/A'} | 
+                            Quantidade: ${order.quantity || 'N/A'} | 
+                            ${new Date(order.timestamp).toLocaleTimeString()}
+                        </div>
+                        ${order.error ? `<div class="order-details" style="color: #ff6b6b;">Erro: ${order.error}</div>` : ''}
+                    `;
+                    
+                    container.appendChild(orderDiv);
                 });
             }
             
