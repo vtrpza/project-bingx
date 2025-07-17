@@ -85,6 +85,7 @@ tmp/
 temp/
 *.tmp
 *.temp
+{*}.png
 
 # Production files
 *.pid

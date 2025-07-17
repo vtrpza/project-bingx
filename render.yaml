@@ -1,9 +1,11 @@
-# render.yaml  (only the service stanza shown)
+# render.yaml for Python web service
 services:
   - type: web
     name: trading-bot-bingx
-    runtime: docker          # ← change from “python”
-    dockerfilePath: ./Dockerfile
+    runtime: python
+    buildCommand: pip install -r requirements-render.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     plan: free
     rootDir: .
     autoDeploy: true
@@ -16,4 +18,9 @@ services:
         sync: false
       - key: LOG_LEVEL
         value: INFO
-    
+      - key: PYTHONPATH
+        value: /opt/render/project/src
+      - key: PIP_DISABLE_PIP_VERSION_CHECK
+        value: 1
+      - key: PYTHONUNBUFFERED
+        value: 1
