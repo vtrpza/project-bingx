@@ -49,25 +49,67 @@ class DemoLogHandler(logging.Handler):
     def __init__(self, level=logging.NOTSET):
         super().__init__(level)
         self.records = []
+        self.max_records = 500  # Limite de logs para evitar sobrecarga
 
     def emit(self, record):
         try:
+            # Tentar parsear como JSON estruturado
             log_entry = json.loads(self.format(record))
-            # Format the log entry for better readability
-            self.records.append(log_entry)
-        except json.JSONDecodeError:
-            # Fallback for non-JSON logs, store as a simple message with default level/timestamp
-            self.records.append({
-                "timestamp": datetime.now().isoformat(),
-                "level": "info",
-                "event": self.format(record)
+            
+            # Adicionar campos extras para melhor rastreabilidade
+            log_entry.update({
+                "logger_name": record.name,
+                "module": record.module if hasattr(record, 'module') else 'unknown',
+                "funcName": record.funcName if hasattr(record, 'funcName') else 'unknown',
+                "lineno": record.lineno if hasattr(record, 'lineno') else 0
             })
+            
+            self.records.append(log_entry)
+            
+        except json.JSONDecodeError:
+            # Fallback para logs não-JSON
+            log_entry = {
+                "timestamp": datetime.now().isoformat(),
+                "level": record.levelname.lower(),
+                "event": self.format(record),
+                "logger_name": record.name,
+                "module": record.module if hasattr(record, 'module') else 'unknown',
+                "funcName": record.funcName if hasattr(record, 'funcName') else 'unknown',
+                "lineno": record.lineno if hasattr(record, 'lineno') else 0,
+                "message": record.getMessage()
+            }
+            self.records.append(log_entry)
+        
+        # Manter apenas os últimos N logs
+        if len(self.records) > self.max_records:
+            self.records = self.records[-self.max_records:]
 
     def get_logs(self):
         return self.records
 
     def clear_logs(self):
         self.records.clear()
+        
+    def get_flow_summary(self):
+        """Gera resumo do fluxo de trading"""
+        flow_events = []
+        for log in self.records:
+            event = log.get('event', '')
+            if any(keyword in event.lower() for keyword in [
+                'scan', 'analyze', 'signal', 'order', 'position', 'trade', 
+                'entry', 'exit', 'profit', 'loss', 'rsi', 'sma', 'crossover'
+            ]):
+                flow_events.append({
+                    'timestamp': log.get('timestamp'),
+                    'level': log.get('level'),
+                    'event': event,
+                    'symbol': log.get('symbol'),
+                    'signal_type': log.get('signal_type'),
+                    'confidence': log.get('confidence'),
+                    'price': log.get('price'),
+                    'entry_type': log.get('entry_type')
+                })
+        return flow_events[-50:]  # Últimos 50 eventos de fluxo
 
 demo_log_handler = DemoLogHandler()
 
@@ -264,8 +306,22 @@ class DemoManager:
         self.is_running = False
         self.last_report = {}
         self.log_handler = demo_log_handler # Use the global handler
-        logging.getLogger("demo_runner").addHandler(self.log_handler)
-        logging.getLogger("demo_runner").setLevel(logging.INFO) # Ensure logs are captured
+        
+        # Configurar logging para capturar de múltiplos loggers
+        loggers_to_capture = [
+            "demo_runner", "trading_engine", "exchange_manager", 
+            "indicators", "risk_manager", "analysis", "core"
+        ]
+        
+        for logger_name in loggers_to_capture:
+            logger_instance = logging.getLogger(logger_name)
+            logger_instance.addHandler(self.log_handler)
+            logger_instance.setLevel(logging.INFO)
+            
+        # Configurar logging da biblioteca structlog também
+        structlog_logger = logging.getLogger("structlog")
+        structlog_logger.addHandler(self.log_handler)
+        structlog_logger.setLevel(logging.INFO)
 
     async def start_demo(self, duration: int = 300, symbols: Optional[List[str]] = None):
         if self.is_running:
@@ -296,7 +352,9 @@ class DemoManager:
         return {
             "is_running": self.is_running,
             "logs": self.log_handler.get_logs(),
-            "last_report": self.last_report # To be updated by demo_runner if needed
+            "flow_summary": self.log_handler.get_flow_summary(),
+            "last_report": self.last_report, # To be updated by demo_runner if needed
+            "total_logs": len(self.log_handler.get_logs())
         }
 
 
@@ -387,6 +445,18 @@ async def get_demo_status():
     
     return demo_manager.get_status()
 
+@app.get("/demo/flow")
+async def get_demo_flow():
+    """Endpoint específico para resumo do fluxo de trading"""
+    if not demo_manager:
+        return {"status": "error", "message": "Demo manager not initialized."}
+    
+    return {
+        "flow_summary": demo_manager.log_handler.get_flow_summary(),
+        "is_running": demo_manager.is_running,
+        "total_flow_events": len(demo_manager.log_handler.get_flow_summary())
+    }
+
 
 
 
@@ -413,6 +483,15 @@ async def demo_dashboard():
             .status-stopped { color: #ff6b6b; }
             .log-entry { margin-bottom: 5px; padding: 8px; border-radius: 4px; background-color: #2d2d2d; }
             .log-entry:nth-child(even) { background-color: #3a3a3a; }
+            .flow-entry { margin-bottom: 10px; padding: 10px; border-radius: 5px; background-color: #0a4d3a; border-left: 4px solid #00d4aa; }
+            .flow-entry.error { background-color: #4d0a0a; border-left-color: #ff6b6b; }
+            .flow-entry.warning { background-color: #4d3a0a; border-left-color: #ffd93d; }
+            .flow-symbol { font-weight: bold; color: #569cd6; }
+            .flow-type { color: #9cd656; font-weight: bold; }
+            .flow-confidence { color: #ffd93d; }
+            .flow-price { color: #ff6b6b; }
+            .button-group { margin-bottom: 10px; }
+            .button-group button { margin-right: 5px; }
         </style>
     </head>
     <body>
@@ -427,13 +506,26 @@ async def demo_dashboard():
 
             <h2>Status da Demonstração</h2>
             <p>Status: <span id="demo-status" class="status-stopped">Parado</span></p>
+            <p>Total de Logs: <span id="total-logs">0</span></p>
+            <p>Eventos de Fluxo: <span id="total-flow-events">0</span></p>
             <button onclick="getDemoStatus()">Atualizar Status</button>
             
-            <h2>Logs da Demonstração</h2>
+            <h2>Fluxo de Trading (Resumo)</h2>
+            <div id="trading-flow"></div>
+            
+            <h2>Logs Detalhados</h2>
+            <div class="button-group">
+                <button onclick="toggleLogType('all')">Todos</button>
+                <button onclick="toggleLogType('flow')">Apenas Fluxo</button>
+                <button onclick="toggleLogType('errors')">Apenas Erros</button>
+            </div>
             <pre id="demo-logs"></pre>
         </div>
 
         <script>
+            let currentLogType = 'all';
+            let allLogs = [];
+            
             async function startDemo() {
                 const duration = document.getElementById('duration').value;
                 const symbolsInput = document.getElementById('symbols').value;
@@ -455,9 +547,8 @@ async def demo_dashboard():
                 const response = await fetch('/demo/status');
                 const data = await response.json();
                 
+                // Atualizar status
                 const statusElement = document.getElementById('demo-status');
-                const logsElement = document.getElementById('demo-logs');
-
                 if (data.is_running) {
                     statusElement.textContent = 'Rodando';
                     statusElement.className = 'status-indicator status-running';
@@ -466,32 +557,111 @@ async def demo_dashboard():
                     statusElement.className = 'status-indicator status-stopped';
                 }
                 
-                logsElement.innerHTML = '';
-                if (data.logs && data.logs.length > 0) {
-                    data.logs.forEach(log => {
-                        const logEntryDiv = document.createElement('div');
-                        logEntryDiv.className = 'log-entry';
-                        
-                        let logMessage = `[${new Date(log.timestamp).toLocaleTimeString()}] [${log.level.toUpperCase()}] ${log.event || log.message}`;
-                        
-                        // Add other fields
-                        for (const key in log) {
-                            if (key !== 'timestamp' && key !== 'level' && key !== 'event' && key !== 'message') {
-                                logMessage += ` ${key}=${JSON.stringify(log[key])}`;
-                            }
-                        }
-                        logEntryDiv.textContent = logMessage;
-                        logsElement.appendChild(logEntryDiv);
-                    });
-                } else {
-                    logsElement.textContent = 'Nenhum log disponível.';
+                // Atualizar contadores
+                document.getElementById('total-logs').textContent = data.total_logs || 0;
+                document.getElementById('total-flow-events').textContent = data.flow_summary ? data.flow_summary.length : 0;
+                
+                // Atualizar fluxo de trading
+                updateTradingFlow(data.flow_summary);
+                
+                // Armazenar logs para filtragem
+                allLogs = data.logs || [];
+                
+                // Atualizar logs baseado no tipo atual
+                updateLogsDisplay();
+            }
+            
+            function updateTradingFlow(flowSummary) {
+                const flowElement = document.getElementById('trading-flow');
+                flowElement.innerHTML = '';
+                
+                if (!flowSummary || flowSummary.length === 0) {
+                    flowElement.innerHTML = '<p>Nenhum evento de fluxo detectado.</p>';
+                    return;
                 }
+                
+                flowSummary.forEach(event => {
+                    const flowDiv = document.createElement('div');
+                    flowDiv.className = `flow-entry ${event.level}`;
+                    
+                    let flowContent = `
+                        <div>
+                            <strong>[${new Date(event.timestamp).toLocaleTimeString()}]</strong>
+                            ${event.symbol ? `<span class="flow-symbol">${event.symbol}</span>` : ''}
+                            ${event.entry_type ? `<span class="flow-type">[${event.entry_type}]</span>` : ''}
+                        </div>
+                        <div>${event.event}</div>
+                    `;
+                    
+                    if (event.confidence) {
+                        flowContent += `<div><span class="flow-confidence">Confiança: ${event.confidence}</span></div>`;
+                    }
+                    
+                    if (event.price) {
+                        flowContent += `<div><span class="flow-price">Preço: ${event.price}</span></div>`;
+                    }
+                    
+                    flowDiv.innerHTML = flowContent;
+                    flowElement.appendChild(flowDiv);
+                });
+            }
+            
+            function updateLogsDisplay() {
+                const logsElement = document.getElementById('demo-logs');
+                logsElement.innerHTML = '';
+                
+                let filteredLogs = allLogs;
+                
+                if (currentLogType === 'flow') {
+                    filteredLogs = allLogs.filter(log => {
+                        const event = log.event || log.message || '';
+                        return ['scan', 'analyze', 'signal', 'order', 'position', 'trade', 'entry', 'exit'].some(keyword => 
+                            event.toLowerCase().includes(keyword)
+                        );
+                    });
+                } else if (currentLogType === 'errors') {
+                    filteredLogs = allLogs.filter(log => log.level === 'error' || log.level === 'warning');
+                }
+                
+                if (filteredLogs.length === 0) {
+                    logsElement.textContent = 'Nenhum log disponível para o filtro selecionado.';
+                    return;
+                }
+                
+                filteredLogs.forEach(log => {
+                    const logEntryDiv = document.createElement('div');
+                    logEntryDiv.className = 'log-entry';
+                    
+                    let logMessage = `[${new Date(log.timestamp).toLocaleTimeString()}] [${(log.level || 'info').toUpperCase()}] ${log.event || log.message}`;
+                    
+                    // Adicionar campos importantes
+                    if (log.symbol) logMessage += ` symbol=${log.symbol}`;
+                    if (log.signal_type) logMessage += ` signal=${log.signal_type}`;
+                    if (log.confidence) logMessage += ` confidence=${log.confidence}`;
+                    if (log.price) logMessage += ` price=${log.price}`;
+                    if (log.entry_type) logMessage += ` entry=${log.entry_type}`;
+                    if (log.logger_name) logMessage += ` [${log.logger_name}]`;
+                    
+                    logEntryDiv.textContent = logMessage;
+                    logsElement.appendChild(logEntryDiv);
+                });
+            }
+            
+            function toggleLogType(type) {
+                currentLogType = type;
+                updateLogsDisplay();
+                
+                // Atualizar visual dos botões
+                document.querySelectorAll('.button-group button').forEach(btn => {
+                    btn.style.backgroundColor = '#007acc';
+                });
+                event.target.style.backgroundColor = '#005f99';
             }
 
             // Carregamento inicial do status
             getDemoStatus();
-            // Atualizar status a cada 5 segundos
-            setInterval(getDemoStatus, 5000);
+            // Atualizar status a cada 3 segundos
+            setInterval(getDemoStatus, 3000);
         </script>
     </body>
     </html>
