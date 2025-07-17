@@ -32,6 +32,7 @@ from fastapi_cache import FastAPICache
 from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 import logging # Import logging module
+from typing import List, Optional # Import List and Optional
 
 from config.settings import settings, TradingMode # Import TradingMode
 from core.trading_engine import TradingEngine
