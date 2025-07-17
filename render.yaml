@@ -7,7 +7,6 @@ services:
     plan: free
     rootDir: .
     autoDeploy: true
-    healthCheckPath: /health
     envVars:
       - key: TRADING_MODE
         value: demo
