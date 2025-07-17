@@ -32,6 +32,7 @@ from fastapi_cache import FastAPICache
 from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 import logging # Import logging module
+import json # Import json module
 from typing import List, Optional # Import List and Optional
 
 from config.settings import settings, TradingMode # Import TradingMode
@@ -50,7 +51,16 @@ class DemoLogHandler(logging.Handler):
         self.records = []
 
     def emit(self, record):
-        self.records.append(self.format(record))
+        try:
+            log_entry = json.loads(self.format(record))
+            # Format the log entry for better readability
+            formatted_log = f"{log_entry.get("timestamp", "N/A")} [{{log_entry.get("level", "N/A").upper()}}] {{log_entry.get("event", "N/A")}}"
+            for key, value in log_entry.items():
+                if key not in ["timestamp", "level", "event", "logger"]: # Exclude already used fields
+                    formatted_log += f" {key}='{value}'"
+            self.records.append(formatted_log)
+        except json.JSONDecodeError:
+            self.records.append(self.format(record)) # Fallback for non-JSON logs
 
     def get_logs(self):
         return self.records
@@ -387,7 +397,8 @@ async def demo_dashboard():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Demo Dashboard</title>
+        <meta charset="UTF-8">
+        <title>Painel de Controle da Demonstração</title>
         <style>
             body { font-family: monospace; background-color: #1e1e1e; color: #d4d4d4; padding: 20px; }
             .container { max-width: 800px; margin: 0 auto; background-color: #252526; padding: 20px; border-radius: 8px; }
@@ -399,24 +410,25 @@ async def demo_dashboard():
             .status-indicator { font-weight: bold; }
             .status-running { color: #00d4aa; }
             .status-stopped { color: #ff6b6b; }
-            .log-entry { margin-bottom: 5px; }
+            .log-entry { margin-bottom: 5px; padding: 8px; border-radius: 4px; background-color: #2d2d2d; }
+            .log-entry:nth-child(even) { background-color: #3a3a3a; }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>Demo Trading Bot Control</h1>
+            <h1>Controle do Robô de Trading de Demonstração</h1>
             
-            <h2>Start Demo</h2>
-            <p>Duration (seconds): <input type="number" id="duration" value="60"></p>
-            <p>Symbols (comma-separated, e.g., BTC-USDT,ETH-USDT): <input type="text" id="symbols" value="BTC-USDT,ETH-USDT"></p>
-            <button onclick="startDemo()">Start Demo</button>
+            <h2>Iniciar Demonstração</h2>
+            <p>Duração (segundos): <input type="number" id="duration" value="60"></p>
+            <p>Símbolos (separados por vírgula, ex: BTC-USDT,ETH-USDT): <input type="text" id="symbols" value="BTC-USDT,ETH-USDT"></p>
+            <button onclick="startDemo()">Iniciar Demonstração</button>
             <p id="start-message"></p>
 
-            <h2>Demo Status</h2>
-            <p>Status: <span id="demo-status" class="status-stopped">Stopped</span></p>
-            <button onclick="getDemoStatus()">Refresh Status</button>
+            <h2>Status da Demonstração</h2>
+            <p>Status: <span id="demo-status" class="status-stopped">Parado</span></p>
+            <button onclick="getDemoStatus()">Atualizar Status</button>
             
-            <h2>Demo Logs</h2>
+            <h2>Logs da Demonstração</h2>
             <pre id="demo-logs"></pre>
         </div>
 
@@ -435,7 +447,7 @@ async def demo_dashboard():
                 });
                 const data = await response.json();
                 document.getElementById('start-message').textContent = JSON.stringify(data, null, 2);
-                getDemoStatus(); // Refresh status after starting
+                getDemoStatus(); // Atualizar status após iniciar
             }
 
             async function getDemoStatus() {
@@ -446,10 +458,10 @@ async def demo_dashboard():
                 const logsElement = document.getElementById('demo-logs');
 
                 if (data.is_running) {
-                    statusElement.textContent = 'Running';
+                    statusElement.textContent = 'Rodando';
                     statusElement.className = 'status-indicator status-running';
                 } else {
-                    statusElement.textContent = 'Stopped';
+                    statusElement.textContent = 'Parado';
                     statusElement.className = 'status-indicator status-stopped';
                 }
                 
@@ -462,13 +474,13 @@ async def demo_dashboard():
                         logsElement.appendChild(logEntry);
                     });
                 } else {
-                    logsElement.textContent = 'No logs available.';
+                    logsElement.textContent = 'Nenhum log disponível.';
                 }
             }
 
-            // Initial status load
+            // Carregamento inicial do status
             getDemoStatus();
-            // Refresh status every 5 seconds
+            // Atualizar status a cada 5 segundos
             setInterval(getDemoStatus, 5000);
         </script>
     </body>
