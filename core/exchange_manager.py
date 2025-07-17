@@ -10,9 +10,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from collections import deque
 from datetime import datetime
 import asyncio
-# A documentação sugere uma estrutura unificada, vamos usar a classe principal
-# e confiar no `defaultType` ou em métodos específicos de swap.
-from bingx import BingxAsync
+import ccxt.async_support as ccxt
 from ccxt.base.errors import RateLimitExceeded
 import backoff
 
@@ -25,20 +23,19 @@ from fastapi_cache.decorator import cache
 logger = get_logger("exchange_manager")
 
 class BingXExchangeManager:
-    """Gerenciador para BingX Perpetual Futures usando bingx-python"""
+    """Gerenciador para BingX Perpetual Futures usando CCXT"""
 
     def __init__(self):
-        # Corrigindo a inicialização para passar um dicionário de configuração
-        config = {
+        # Configuração para CCXT BingX
+        self.exchange = ccxt.bingx({
             'apiKey': settings.bingx_api_key,
             'secret': settings.bingx_secret_key,
             'options': {
-                'defaultType': 'swap', # Garante que as operações são para Futuros
-                'recvWindow': 10000 # Aumenta a janela de tempo para mitigar erros de timestamp
-            }
-        }
-        self.exchange = BingxAsync(config)
-        self.exchange.set_sandbox_mode(settings.trading_mode == "demo")
+                'defaultType': 'swap',  # Garante que as operações são para Futuros
+                'recvWindow': 10000    # Aumenta a janela de tempo para mitigar erros de timestamp
+            },
+            'sandbox': settings.trading_mode == "demo"
+        })
         
         # Rate limiter baseado na documentação: ≤ 10 req/s (100 / 10 s)
         self.rate_limiter = AsyncRateLimiter(
