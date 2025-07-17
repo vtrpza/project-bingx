@@ -54,7 +54,7 @@ class DemoLogHandler(logging.Handler):
         try:
             log_entry = json.loads(self.format(record))
             # Format the log entry for better readability
-            formatted_log = f"{log_entry.get("timestamp", "N/A")} [{{log_entry.get("level", "N/A").upper()}}] {{log_entry.get("event", "N/A")}}"
+            formatted_log = f"{log_entry.get("timestamp", "N/A")} [{log_entry.get("level", "N/A").upper()}] {log_entry.get("event", "N/A")}"
             for key, value in log_entry.items():
                 if key not in ["timestamp", "level", "event", "logger"]: # Exclude already used fields
                     formatted_log += f" {key}='{value}'"
