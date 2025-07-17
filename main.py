@@ -28,6 +28,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import structlog
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.inmemory import InMemoryBackend
+from fastapi_cache.decorator import cache
 
 from config.settings import settings
 from core.trading_engine import TradingEngine
@@ -236,6 +239,9 @@ async def lifespan(app: FastAPI):
     
     # Initialize trading engine
     trading_engine = TradingEngine(connection_manager)
+
+    # Initialize cache
+    FastAPICache.init(InMemoryBackend(), prefix="fastapi-cache")
     
     # Register trading engine with API routes
     register_trading_engine(trading_engine)
@@ -737,18 +743,41 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 @app.get("/health")
+@app.get("/healthz")  # Alternative endpoint for Render
 async def health_check():
-    """Health check endpoint"""
-    status = "healthy"
-    if trading_engine:
-        engine_status = await trading_engine.get_status()
-        status = "healthy" if engine_status.is_running else "degraded"
-    
-    return {
-        "status": status,
-        "service": "enterprise-trading-bot",
-        "version": "1.0.0"
-    }
+    """Health check endpoint for Render and monitoring"""
+    try:
+        status = "healthy"
+        uptime = datetime.now().isoformat()
+        
+        # Check trading engine status
+        engine_healthy = False
+        if trading_engine:
+            try:
+                engine_status = await trading_engine.health_check()
+                engine_healthy = engine_status.get("engine_running", False)
+                status = "healthy" if engine_healthy else "degraded"
+            except Exception as e:
+                logger.error(f"Health check engine error: {e}")
+                status = "degraded"
+        
+        return {
+            "status": status,
+            "timestamp": uptime,
+            "service": "trading-bot-bingx",
+            "version": "1.0.0",
+            "engine_healthy": engine_healthy,
+            "mode": "demo" if settings.trading_mode == "demo" else "real"
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "timestamp": datetime.now().isoformat(),
+            "service": "trading-bot-bingx",
+            "version": "1.0.0",
+            "error": str(e)
+        }
 
 
 if __name__ == "__main__":
@@ -756,6 +785,6 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,
+        reload=False,
         log_level="info"
     )

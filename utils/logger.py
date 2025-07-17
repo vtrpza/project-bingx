@@ -21,8 +21,9 @@ def setup_logging(log_level: str = "INFO"):
         structlog.stdlib.filter_by_level,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
+        structlog.contextvars.merge_contextvars,
         structlog.processors.TimeStamper(fmt="ISO"),
-        structlog.dev.ConsoleRenderer(colors=True)  # Colorido para desenvolvimento
+        structlog.processors.JSONRenderer()  # JSON para sistemas de log
     ]
     
     # Configurar structlog
@@ -155,9 +156,9 @@ class TradingLogger:
         """Log de informação"""
         self.logger.info(message, **kwargs)
     
-    def warning(self, message: str, **kwargs):
+    def warning(self, message: str, *args, **kwargs):
         """Log de aviso"""
-        self.logger.warning(message, **kwargs)
+        self.logger.warning(message, *args, **kwargs)
     
     def error(self, message: str, **kwargs):
         """Log de erro"""

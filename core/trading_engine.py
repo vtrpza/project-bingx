@@ -9,9 +9,11 @@ Implementa os mesmos parâmetros e lógica do bot original com arquitetura enter
 import asyncio
 import time
 from datetime import datetime, timedelta
+
 from typing import Dict, List, Optional, Any
 import pandas as pd
 import numpy as np
+import structlog
 
 from config.settings import settings
 from core.exchange_manager import BingXExchangeManager
@@ -21,12 +23,9 @@ from core.demo_monitor import (
     log_signal_event, log_risk_event, log_execution_event,
     log_position_event, log_close_event
 )
-from analysis.indicators import TechnicalIndicators
+from analysis.indicators import IndicatorCalculator
 from analysis.timeframes import TimeframeManager
-from data.models import (
-    TradingSignal, TradingStatusResponse, Position, Order, OrderResult,
-    PortfolioMetrics, SystemHealth, TradePerformance
-)
+from data.models import SignalType, TradingSignal, TradingStatusResponse, Position, Order, OrderResult, PortfolioMetrics, SystemHealth, TechnicalIndicators, OrderType
 from utils.logger import get_logger
 
 logger = get_logger("trading_engine")
@@ -37,7 +36,8 @@ class TradingEngine:
     
     def __init__(self, connection_manager=None):
         self.connection_manager = connection_manager
-        self.exchange = BingXExchangeManager()
+        self.exchange_manager = BingXExchangeManager()
+        self.exchange = self.exchange_manager  # Manter compatibilidade
         self.timeframe_manager = TimeframeManager(self.exchange)
         self.risk_manager = RiskManager()
         self.is_running = False
@@ -45,10 +45,12 @@ class TradingEngine:
         
         # Estado interno
         self.active_positions: Dict[str, Position] = {}
-        self.recent_signals: List[TradingSignal] = []
+        self.recent_signals: List[TradingSignal] = [] # Limpar sinais recentes na inicialização
         self.performance_metrics: Dict[str, Any] = {}
         self.last_scan_time = None
         self.scan_task = None
+        self._equity_curve: List[float] = []
+        self._max_drawdown: float = 0.0
         
         # Cache para otimização
         self._market_data_cache = {}
@@ -103,12 +105,18 @@ class TradingEngine:
                 except asyncio.CancelledError:
                     pass
             
+            # Flush dangling tasks
+            await asyncio.gather(*asyncio.all_tasks(), return_exceptions=True)
+            
             # Fechar posições se configurado
             if settings.close_positions_on_stop:
                 await self.close_all_positions("system_shutdown")
             
             # Parar demo monitor
             self.demo_monitor.stop_monitoring()
+            
+            # Fechar conexão com a exchange
+            await self.exchange.close()
             
             logger.info("trading_engine_stopped")
             
@@ -121,18 +129,13 @@ class TradingEngine:
             # Carregar posições ativas da exchange
             positions_data = await self.exchange.get_positions()
             
-            for pos_data in positions_data:
-                if pos_data.get("size", 0) != 0:
-                    position = Position(
-                        symbol=pos_data["symbol"],
-                        side=pos_data["side"],
-                        size=float(pos_data["size"]),
-                        entry_price=float(pos_data["entryPrice"]),
-                        current_price=float(pos_data["markPrice"]),
-                        pnl=float(pos_data["unrealizedPnl"]),
-                        pnl_pct=float(pos_data["percentage"]),
-                        timestamp=datetime.now()
-                    )
+            # Get account balance to initialize equity curve
+            account_balance = await self.exchange.get_account_balance()
+            self._equity_curve.append(account_balance)
+            logger.info("initial_equity_set", balance=account_balance)
+            
+            for position in positions_data:
+                if position.size != 0:
                     self.active_positions[position.symbol] = position
             
             logger.info("state_initialized", 
@@ -148,6 +151,24 @@ class TradingEngine:
                 if not self.is_scanning:
                     await self._scan_market_opportunities()
                 
+                # Update equity curve and check for max drawdown
+                current_balance = await self.exchange.get_account_balance()
+                if current_balance is not None:
+                    self._equity_curve.append(current_balance)
+                    
+                    # Calculate max drawdown
+                    if len(self._equity_curve) > 1:
+                        peak = max(self._equity_curve)
+                        current_drawdown = (peak - current_balance) / peak * 100 if peak > 0 else 0
+                        self._max_drawdown = max(self._max_drawdown, current_drawdown)
+                        
+                        if self._max_drawdown >= settings.emergency_stop_drawdown:
+                            logger.warning("emergency_stop_triggered_by_drawdown", 
+                                        drawdown=self._max_drawdown, 
+                                        threshold=settings.emergency_stop_drawdown)
+                            await self.stop()
+                            break
+
                 # Atualizar posições ativas
                 await self._update_active_positions()
                 
@@ -184,6 +205,8 @@ class TradingEngine:
         
         self.is_scanning = True
         scan_start = time.time()
+        scan_id = f"scan_{int(scan_start)}"
+        structlog.contextvars.bind_contextvars(scan_id=scan_id)
         
         try:
             # Lista de TODOS os símbolos BingX Futures (~550)
@@ -214,6 +237,7 @@ class TradingEngine:
         
         finally:
             self.is_scanning = False
+            structlog.contextvars.unbind_contextvars("scan_id")
     
     async def scan_market(self):
         """Escaneia mercado em busca de oportunidades"""
@@ -225,7 +249,7 @@ class TradingEngine:
             # Cache para evitar requests desnecessários (TTL mais longo)
             cache_key = "all_bingx_symbols"
             if (cache_key in self._market_data_cache and 
-                time.time() - self._cache_timestamp.get(cache_key, 0) < 7200):  # 2 horas
+                time.time() - self._cache_timestamp.get(cache_key, 0) < 1800):  # 30 minutos
                 return self._market_data_cache[cache_key]
             
             # Usar símbolos permitidos se disponíveis para evitar chamada da API
@@ -234,10 +258,22 @@ class TradingEngine:
                            symbols_count=len(settings.allowed_symbols))
                 
                 # Cache símbolos configurados
-                self._market_data_cache[cache_key] = settings.allowed_symbols
+                # Formatar para o padrão ccxt (BASE/QUOTE:QUOTE)
+                # Normalizar: remover hífen e USDT corretamente
+                formatted_symbols = []
+                for s in settings.allowed_symbols:
+                    # Remover hífen e extrair base corretamente
+                    if '-USDT' in s:
+                        base = s.replace('-USDT', '')
+                    elif 'USDT' in s:
+                        base = s.replace('USDT', '')
+                    else:
+                        base = s
+                    formatted_symbols.append(f"{base}/USDT:USDT")
+                self._market_data_cache[cache_key] = formatted_symbols
                 self._cache_timestamp[cache_key] = time.time()
                 
-                return settings.allowed_symbols
+                return formatted_symbols
             
             # Só chamar API se não há símbolos configurados
             logger.info("fetching_symbols_from_api", reason="no_configured_symbols")
@@ -282,30 +318,22 @@ class TradingEngine:
             return settings.allowed_symbols  # Fallback para símbolos configurados
 
     async def _filter_valid_symbols(self, symbols: List[str]) -> List[str]:
-        """Filtra símbolos válidos usando cache e lista permitida"""
-        # Use only allowed symbols from settings to avoid API calls
-        valid_symbols = []
-        
-        # Filter symbols based on allowed list (no API calls needed)
-        for symbol in symbols:
-            if symbol in settings.allowed_symbols:
-                valid_symbols.append(symbol)
-        
-        # If no allowed symbols configured, use a conservative subset
-        if not valid_symbols:
-            # Use top 20 most liquid symbols to avoid rate limiting
-            popular_symbols = [
-                "BTC-USDT", "ETH-USDT", "BNB-USDT", "ADA-USDT", "SOL-USDT",
-                "DOT-USDT", "AVAX-USDT", "LINK-USDT", "MATIC-USDT", "UNI-USDT",
-                "ATOM-USDT", "FIL-USDT", "LTC-USDT", "TRX-USDT", "ETC-USDT",
-                "XRP-USDT", "BCH-USDT", "EOS-USDT", "AAVE-USDT", "SUSHI-USDT"
-            ]
-            valid_symbols = [s for s in popular_symbols if s in symbols]
-        
+        """Filtra símbolos para garantir que eles estão na lista de permissões."""
+        if not settings.allowed_symbols:
+            logger.warning("Nenhum símbolo permitido configurado. O scan não será executado.")
+            return []
+
+        # A lista `symbols` já está no formato correto (ex: 'BTC/USDT')
+        # A lista `settings.allowed_symbols` está no formato 'BTCUSDT'
+        # Precisamos comparar os dois formatos.
+
+        allowed_set = set(settings.allowed_symbols)
+        valid_symbols = [s for s in symbols if s.replace('/', '').replace(':USDT', '') in allowed_set]
+
         logger.info("symbol_filtering_completed",
                     total_symbols=len(symbols),
                     valid_symbols=len(valid_symbols))
-        
+
         return valid_symbols
 
     async def _validate_symbol(self, symbol: str) -> bool:
@@ -331,32 +359,15 @@ class TradingEngine:
         """Analisa símbolos com paralelização controlada e execução imediata"""
         executed_signals = []
         
-        # Determinar estratégia de processamento baseada na performance da API
-        api_metrics = self.exchange.get_performance_metrics()
-        performance_status = api_metrics.get("performance_status", "GOOD")
-        
-        # Ajustar batch size baseado na performance
-        if performance_status == "EXCELLENT":
-            batch_size = 4  # Alta performance - mais paralelo
-        elif performance_status in ["GOOD", "MODERATE"]:
-            batch_size = 2  # Performance moderada - paralelo limitado
-        else:
-            batch_size = 1  # Baixa performance - sequencial
-        
-        logger.info("controlled_parallel_scan_started", 
-                    total_symbols=len(symbols),
-                    batch_size=batch_size,
-                    performance_status=performance_status)
-        
         # Processar símbolos em batches controlados
-        for i in range(0, len(symbols), batch_size):
+        for i in range(0, len(symbols), 1): # Usar um batch size fixo de 1 para evitar rate limit
             # Break if we've reached max positions
             if len(self.active_positions) >= settings.max_positions:
                 logger.info("max_positions_reached", 
                             current_positions=len(self.active_positions))
                 break
             
-            batch_symbols = symbols[i:i + batch_size]
+            batch_symbols = symbols[i:i + 4]
             
             # Filtrar símbolos que já têm posições
             available_symbols = [s for s in batch_symbols if s not in self.active_positions]
@@ -365,34 +376,18 @@ class TradingEngine:
                 continue
             
             # Processar batch sequencialmente para evitar rate limiting
-            try:
-                for symbol in available_symbols:
-                    try:
-                        result = await self._analyze_symbol_with_execution(symbol)
-                        
-                        if result:  # Signal foi executado
-                            executed_signals.append(result)
-                            logger.info("signal_executed_from_batch", 
-                                        symbol=symbol, 
-                                        side=result.side,
-                                        confidence=result.confidence)
-                    except Exception as e:
-                        logger.log_error(e, context=f"Sequential analysis for {symbol}")
-                        continue
-                
-            except Exception as e:
-                logger.log_error(e, context=f"Processing batch {i//batch_size + 1}")
-                continue
-            
-            # Delay entre batches baseado na performance
-            if i + batch_size < len(symbols):  # Não esperar após o último batch
-                batch_delay = self._calculate_batch_delay(performance_status, batch_size)
-                if batch_delay > 0:
-                    await asyncio.sleep(batch_delay)
-        
-        logger.info("controlled_parallel_scan_completed",
-                    symbols_scanned=len(symbols),
-                    signals_executed=len(executed_signals))
+            for symbol in available_symbols:
+                try:
+                    result = await self._analyze_symbol_with_execution(symbol)
+                    if result:  # Signal foi executado
+                        executed_signals.append(result)
+                    
+                    # Delay entre símbolos para evitar rate limiting
+                    await asyncio.sleep(1.0)
+                    
+                except Exception as e:
+                    logger.log_error(e, context=f"Sequential analysis error for {symbol}")
+                    continue
         
         return executed_signals
     
@@ -402,46 +397,47 @@ class TradingEngine:
             # Log scanning event
             scan_start = time.time()
             log_scan_event(symbol, success=True)
-            
+
             # Analyze symbol for signal
             analysis_start = time.time()
             signal = await self._analyze_symbol(symbol)
             analysis_duration = int((time.time() - analysis_start) * 1000)
-            
-            if signal and signal.confidence >= settings.min_confidence:
-                # Log analysis success
-                log_analysis_event(symbol, signal.confidence, success=True, duration_ms=analysis_duration)
-                
-                # Log signal generated
-                log_signal_event(signal, success=True)
-                
-                logger.info("signal_detected", 
-                            symbol=symbol, 
-                            side=signal.side, 
-                            confidence=signal.confidence)
-            elif signal:
-                # Log signal gerado mas com baixa confiança
-                logger.info("signal_low_confidence", 
-                            symbol=symbol, 
-                            side=signal.side, 
-                            confidence=signal.confidence,
-                            min_required=settings.min_confidence,
-                            entry_type=signal.indicators.get("entry_type", "primary"))
-                
-                # Immediate execution if signal is strong enough
-                if signal.confidence >= 0.7:  # High confidence threshold
+
+            if signal:  # Signal was generated
+                if signal.confidence >= settings.min_confidence:
+                    # Log analysis success for high confidence signals
+                    log_analysis_event(symbol, signal.confidence, success=True, duration_ms=analysis_duration)
+                    log_signal_event(signal, success=True)
+                    logger.info("signal_detected",
+                                symbol=symbol,
+                                side=signal.side,
+                                confidence=signal.confidence)
+                else:
+                    # Log signal generated but with low confidence
+                    logger.info("signal_low_confidence",
+                                symbol=symbol,
+                                side=signal.side,
+                                confidence=signal.confidence,
+                                min_required=settings.min_confidence,
+                                entry_type=getattr(signal, "entry_type", "primary"))
+                    # Store for later review (low confidence, not immediately executed)
+                    self.recent_signals.append(signal)
+
+                # --- Consolidated Execution Logic ---
+                # Execute if signal is strong enough (confidence >= settings.min_confidence)
+                if signal.confidence >= settings.min_confidence:
                     # Validate with risk manager
                     allowed, reason = await self.risk_manager.validate_new_position(signal, self.active_positions)
-                    
+
                     # Log risk validation
                     log_risk_event(symbol, allowed, reason)
-                    
+
                     if allowed:
                         # Execute immediately
                         exec_start = time.time()
                         result = await self._execute_signal(signal)
                         exec_duration = int((time.time() - exec_start) * 1000)
-                        
+
                         if result:
                             # Log successful execution
                             log_execution_event(symbol, success=True, order_id=f"DEMO_{symbol}_{int(time.time())}", duration_ms=exec_duration)
@@ -450,23 +446,22 @@ class TradingEngine:
                             # Log failed execution
                             log_execution_event(symbol, success=False, error="execution_failed")
                     else:
-                        logger.info("signal_rejected_by_risk_manager", 
+                        logger.info("signal_rejected_by_risk_manager",
                                     symbol=symbol, reason=reason)
-                else:
-                    # Store for later review (low confidence)
-                    self.recent_signals.append(signal)
-            else:
+                # --- End Consolidated Execution Logic ---
+
+            else:  # No signal generated
                 # Log analysis with no signal
-                confidence = signal.confidence if signal else 0.0
+                confidence = signal.confidence if signal else 0.0  # This will be 0.0 if signal is None
                 log_analysis_event(symbol, confidence, success=False, duration_ms=analysis_duration)
-                
-                if not signal:
-                    logger.debug("no_signal_generated", 
-                                symbol=symbol, 
-                                reason="conditions_not_met")
-            
-            return None  # No signal executed
-            
+
+                if not signal:  # Redundant check, but keeps original logic flow
+                    logger.debug("no_signal_generated",
+                                 symbol=symbol,
+                                 reason="conditions_not_met")
+
+            return None  # No signal executed or execution failed
+
         except Exception as e:
             logger.log_error(e, context=f"Analyzing symbol {symbol}")
             return None
@@ -493,37 +488,9 @@ class TradingEngine:
         return base_delay * multiplier * batch_multiplier
 
     def _calculate_dynamic_delay(self) -> float:
-        """Calcula delay dinâmico baseado na performance da API"""
-        # Obter métricas de performance do exchange manager
-        avg_response_time = self.exchange.rate_metrics.avg_response_time
-        success_rate = self.exchange.rate_metrics.success_rate
-        recent_errors = self.exchange.rate_metrics.errors_count
-        
-        # Delay base otimizado (reduzido de 2.0s para 0.5s)
-        base_delay = 0.5
-        
-        # Ajustar baseado no tempo de resposta médio
-        if avg_response_time > 1000:  # > 1 segundo
-            base_delay += 0.3
-        elif avg_response_time > 500:  # > 500ms
-            base_delay += 0.2
-        elif avg_response_time < 200:  # < 200ms (rápido)
-            base_delay = max(0.3, base_delay - 0.2)
-        
-        # Ajustar baseado na taxa de sucesso
-        if success_rate < 95:
-            base_delay += 0.5
-        elif success_rate > 99:
-            base_delay = max(0.3, base_delay - 0.1)
-        
-        # Ajustar baseado em errors recentes
-        if recent_errors > 5:
-            base_delay += 1.0
-        elif recent_errors == 0:
-            base_delay = max(0.3, base_delay - 0.1)
-        
-        # Limitar entre 0.3s e 5.0s
-        return max(0.3, min(5.0, base_delay))
+        """Calcula delay fixo para evitar rate limiting"""
+        # Delay fixo conservador para evitar rate limiting
+        return 1.0  # 1 segundo entre calls
 
     async def _get_tradeable_symbols(self) -> List[str]:
         """Obtém lista de símbolos tradeable (para compatibilidade)"""
@@ -559,25 +526,45 @@ class TradingEngine:
         """Analisa um símbolo para oportunidades de trading"""
         try:
             # Obter dados históricos (otimizado para rate limiting)
-            klines_5m = await self.exchange.get_klines(symbol, "5m", 200)
+            klines_5m = await self.exchange.get_klines(symbol, "5m", 800)
             
             if klines_5m is None or (hasattr(klines_5m, 'empty') and klines_5m.empty) or len(klines_5m) < 100:
+                logger.debug("klines_insufficient_data", symbol=symbol, klines_len=len(klines_5m) if klines_5m else 0)
                 return None
+            
+            df_5m = pd.DataFrame(klines_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             
             # Construir timeframes customizados
             df_2h = self.timeframe_manager.build_2h_timeframe(klines_5m)
             df_4h = self.timeframe_manager.build_4h_timeframe(klines_5m)
             
+            # Certificar que os dataframes construídos também têm as colunas corretas
+            df_2h.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            df_4h.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            
             if df_2h.empty or df_4h.empty:
+                logger.debug("timeframe_df_empty", symbol=symbol, df_2h_empty=df_2h.empty, df_4h_empty=df_4h.empty)
                 return None
             
             # Aplicar indicadores técnicos
-            df_2h = TechnicalIndicators.apply_all_indicators(df_2h)
-            df_4h = TechnicalIndicators.apply_all_indicators(df_4h)
+            df_2h = IndicatorCalculator.apply_all_indicators(df_2h)
+            df_4h = IndicatorCalculator.apply_all_indicators(df_4h)
             
+            # Log dos valores dos indicadores para debug
+            logger.debug("indicator_values", 
+                        symbol=symbol,
+                        rsi_2h=df_2h.iloc[-1]["rsi"] if "rsi" in df_2h.columns else "N/A",
+                        sma_2h=df_2h.iloc[-1]["sma"] if "sma" in df_2h.columns else "N/A",
+                        distance_2h=df_2h.iloc[-1]["distance_to_pivot"] if "distance_to_pivot" in df_2h.columns else "N/A",
+                        slope_2h=df_2h.iloc[-1]["slope"] if "slope" in df_2h.columns else "N/A",
+                        rsi_4h=df_4h.iloc[-1]["rsi"] if "rsi" in df_4h.columns else "N/A",
+                        sma_4h=df_4h.iloc[-1]["sma"] if "sma" in df_4h.columns else "N/A",
+                        distance_4h=df_4h.iloc[-1]["distance_to_pivot"] if "distance_to_pivot" in df_4h.columns else "N/A",
+                        slope_4h=df_4h.iloc[-1]["slope"] if "slope" in df_4h.columns else "N/A")
+
             # Validar condições de sinal
-            conditions_2h = TechnicalIndicators.validate_signal_conditions(df_2h)
-            conditions_4h = TechnicalIndicators.validate_signal_conditions(df_4h)
+            conditions_2h = IndicatorCalculator.validate_signal_conditions(df_2h)
+            conditions_4h = IndicatorCalculator.validate_signal_conditions(df_4h)
             
             # Log das condições para debug
             logger.debug("signal_conditions", 
@@ -585,111 +572,15 @@ class TradingEngine:
                         conditions_2h=conditions_2h,
                         conditions_4h=conditions_4h)
             
-            # Lógica de decisão (mantém mesma do bot original)
+            # SISTEMA SEQUENCIAL: Primeiro Primary Entry, depois Reentry
             signal = None
             
-            # ENTRADA PRINCIPAL (condições mais flexíveis)
-            if (conditions_2h["rsi_ok"] and 
-                conditions_2h["distance_ok"] and 
-                (conditions_2h["long_cross"] or conditions_2h["slope_ok"])):
-                
-                confidence = self._calculate_signal_confidence(
-                    conditions_2h, conditions_4h, "long"
-                )
-                
-                signal = TradingSignal(
-                    symbol=symbol,
-                    side="buy",
-                    confidence=confidence,
-                    entry_price=float(df_2h.iloc[-1]["close"]),
-                    stop_loss=float(df_2h.iloc[-1]["close"]) * (1 - settings.stop_loss_pct),
-                    take_profit=float(df_2h.iloc[-1]["close"]) * (1 + settings.take_profit_pct),
-                    indicators={
-                        "rsi_2h": float(df_2h.iloc[-1]["rsi"]),
-                        "rsi_4h": float(df_4h.iloc[-1]["rsi"]),
-                        "sma_2h": float(df_2h.iloc[-1]["sma"]),
-                        "distance_2h": float(conditions_2h["distance_value"]),
-                        "slope_4h": float(conditions_4h["slope_value"])
-                    },
-                    timestamp=datetime.now()
-                )
+            # ETAPA 1: ENTRADA PRINCIPAL (Primary Entry) - usar timeframe 4h como principal
+            signal = self._try_primary_entry(df_4h, conditions_2h, conditions_4h, symbol)
             
-            # ENTRADA PRINCIPAL SHORT (condições mais flexíveis)
-            elif (conditions_2h["rsi_ok"] and 
-                  conditions_2h["distance_ok"] and 
-                  (conditions_2h["short_cross"] or conditions_2h["slope_ok"])):
-                
-                confidence = self._calculate_signal_confidence(
-                    conditions_2h, conditions_4h, "short"
-                )
-                
-                signal = TradingSignal(
-                    symbol=symbol,
-                    side="sell",
-                    confidence=confidence,
-                    entry_price=float(df_2h.iloc[-1]["close"]),
-                    stop_loss=float(df_2h.iloc[-1]["close"]) * (1 + settings.stop_loss_pct),
-                    take_profit=float(df_2h.iloc[-1]["close"]) * (1 - settings.take_profit_pct),
-                    indicators={
-                        "rsi_2h": float(df_2h.iloc[-1]["rsi"]),
-                        "rsi_4h": float(df_4h.iloc[-1]["rsi"]),
-                        "sma_2h": float(df_2h.iloc[-1]["sma"]),
-                        "distance_2h": float(conditions_2h["distance_value"]),
-                        "slope_4h": float(conditions_4h["slope_value"])
-                    },
-                    timestamp=datetime.now()
-                )
-            
-            # REENTRADA (apenas distância 2% da SMA vs preço atual)
-            elif not signal:
-                current_price = float(df_5m.iloc[-1]["close"])
-                sma_2h = float(df_2h.iloc[-1]["sma"])
-                sma_4h = float(df_4h.iloc[-1]["sma"])
-                
-                # Distância de 2% da SMA
-                distance_2h = abs(current_price - sma_2h) / sma_2h
-                distance_4h = abs(current_price - sma_4h) / sma_4h
-                
-                if distance_2h >= 0.005 or distance_4h >= 0.005:  # 0.5% em vez de 2%
-                    # REENTRADA LONG (preço abaixo da SMA de 2h OU 4h)
-                    if current_price < sma_2h or current_price < sma_4h:
-                        signal = TradingSignal(
-                            symbol=symbol,
-                            side="buy",
-                            confidence=0.6,  # Confiança fixa para reentrada
-                            entry_price=current_price,
-                            stop_loss=current_price * (1 - settings.stop_loss_pct),
-                            take_profit=current_price * (1 + settings.take_profit_pct),
-                            indicators={
-                                "entry_type": "reentry",
-                                "distance_2h": distance_2h,
-                                "distance_4h": distance_4h,
-                                "current_price": current_price,
-                                "sma_2h": sma_2h,
-                                "sma_4h": sma_4h
-                            },
-                            timestamp=datetime.now()
-                        )
-                    
-                    # REENTRADA SHORT (preço acima da SMA de 2h OU 4h)
-                    elif current_price > sma_2h or current_price > sma_4h:
-                        signal = TradingSignal(
-                            symbol=symbol,
-                            side="sell",
-                            confidence=0.6,  # Confiança fixa para reentrada
-                            entry_price=current_price,
-                            stop_loss=current_price * (1 + settings.stop_loss_pct),
-                            take_profit=current_price * (1 - settings.take_profit_pct),
-                            indicators={
-                                "entry_type": "reentry",
-                                "distance_2h": distance_2h,
-                                "distance_4h": distance_4h,
-                                "current_price": current_price,
-                                "sma_2h": sma_2h,
-                                "sma_4h": sma_4h
-                            },
-                            timestamp=datetime.now()
-                        )
+            # ETAPA 2: REENTRADA (Reentry) - apenas se não houve sinal principal
+            if not signal:
+                signal = self._try_reentry(df_2h, df_4h, symbol)
             
             # Log final do resultado
             if signal:
@@ -697,12 +588,157 @@ class TradingEngine:
                            symbol=symbol, 
                            side=signal.side, 
                            confidence=signal.confidence,
-                           entry_type=signal.indicators.get("entry_type", "primary"))
+                           entry_type=getattr(signal, "entry_type", "primary"))
             
             return signal
             
         except Exception as e:
             logger.log_error(e, context=f"Analyzing symbol {symbol}")
+            return None
+    
+    def _try_primary_entry(self, df_4h: pd.DataFrame, 
+                          conditions_2h: dict, conditions_4h: dict, symbol: str) -> Optional[TradingSignal]:
+        """
+        ENTRADA PRINCIPAL: RSI + cruzamento SMA/pivot center (4h timeframe) com confiança dinâmica
+        """
+        try:
+            # Usar timeframe 4h como principal para decisão (conforme especificação)
+            # 2h como confirmação
+            
+            # ENTRADA PRINCIPAL LONG
+            if (conditions_4h["rsi_ok"] and 
+                conditions_4h["distance_ok"] and 
+                (conditions_4h["long_cross"] or conditions_4h["slope_ok"]) and
+                conditions_2h["rsi_ok"]):  # 2h como confirmação
+                
+                confidence = self._calculate_signal_confidence(
+                    conditions_2h, conditions_4h, "long"
+                )
+                
+                return TradingSignal(
+                    symbol=symbol,
+                    side="BUY",
+                    confidence=confidence,
+                    entry_type="primary",  # Marcar como entrada principal
+                    entry_price=float(df_4h.iloc[-1]["close"]),
+                    stop_loss=float(df_4h.iloc[-1]["close"]) - (float(df_4h.iloc[-1]["atr"]) * settings.atr_multiplier),
+                    take_profit=float(df_4h.iloc[-1]["close"]) + (float(df_4h.iloc[-1]["atr"]) * settings.atr_multiplier),
+                    signal_type=SignalType.LONG,
+                    price=float(df_4h.iloc[-1]["close"]),
+                    indicators=TechnicalIndicators(
+                        rsi=float(df_4h.iloc[-1]["rsi"]),
+                        sma=float(df_4h.iloc[-1]["sma"]),
+                        pivot_center=float(df_4h.iloc[-1]["center"]),
+                        distance_to_pivot=float(conditions_4h["distance_value"]),
+                        slope=float(conditions_4h["slope_value"])
+                    ),
+                    timestamp=datetime.now()
+                )
+            
+            # ENTRADA PRINCIPAL SHORT
+            elif (conditions_4h["rsi_ok"] and 
+                  conditions_4h["distance_ok"] and 
+                  (conditions_4h["short_cross"] or conditions_4h["slope_ok"]) and
+                  conditions_2h["rsi_ok"]):  # 2h como confirmação
+                
+                confidence = self._calculate_signal_confidence(
+                    conditions_2h, conditions_4h, "short"
+                )
+                
+                return TradingSignal(
+                    symbol=symbol,
+                    side="SELL",
+                    confidence=confidence,
+                    entry_type="primary",  # Marcar como entrada principal
+                    entry_price=float(df_4h.iloc[-1]["close"]),
+                    stop_loss=float(df_4h.iloc[-1]["close"]) + (float(df_4h.iloc[-1]["atr"]) * settings.atr_multiplier),
+                    take_profit=float(df_4h.iloc[-1]["close"]) - (float(df_4h.iloc[-1]["atr"]) * settings.atr_multiplier),
+                    signal_type=SignalType.SHORT,
+                    price=float(df_4h.iloc[-1]["close"]),
+                    indicators=TechnicalIndicators(
+                        rsi=float(df_4h.iloc[-1]["rsi"]),
+                        sma=float(df_4h.iloc[-1]["sma"]),
+                        pivot_center=float(df_4h.iloc[-1]["center"]),
+                        distance_to_pivot=float(conditions_4h["distance_value"]),
+                        slope=float(conditions_4h["slope_value"])
+                    ),
+                    timestamp=datetime.now()
+                )
+            
+            return None
+            
+        except Exception as e:
+            logger.log_error(e, context=f"Primary entry analysis for {symbol}")
+            return None
+    
+    def _try_reentry(self, df_2h: pd.DataFrame, df_4h: pd.DataFrame, symbol: str) -> Optional[TradingSignal]:
+        """
+        REENTRADA: Distância ≥2% entre preço atual e MM1 (2h e 4h timeframes) com confiança fixa 0.60
+        """
+        try:
+            # Importar método para cálculo de distância MM1
+            from analysis.indicators import IndicatorCalculator
+            
+            # Preço atual (último do 5m para máxima precisão)
+            current_price = float(df_2h.iloc[-1]["close"])
+            
+            # MM1 dos timeframes 2h e 4h (equivale ao próprio preço desses TFs)
+            mm1_2h = df_2h["mm1"] if "mm1" in df_2h.columns else df_2h["close"]
+            mm1_4h = df_4h["mm1"] if "mm1" in df_4h.columns else df_4h["close"]
+            
+            # Calcular distâncias usando o método específico
+            distance_2h = IndicatorCalculator.calculate_distance_to_mm1(current_price, mm1_2h)
+            distance_4h = IndicatorCalculator.calculate_distance_to_mm1(current_price, mm1_4h)
+            
+            # Verificar se ambos timeframes têm distância ≥ 2%
+            if distance_2h >= 2.0 and distance_4h >= 2.0:
+                mm1_2h_value = float(mm1_2h.iloc[-1])
+                mm1_4h_value = float(mm1_4h.iloc[-1])
+                
+                # REENTRADA LONG: preço < MM1 em AMBOS timeframes
+                if current_price < mm1_2h_value and current_price < mm1_4h_value:
+                    return TradingSignal(
+                        symbol=symbol,
+                        side="BUY",
+                        confidence=0.60,  # Confiança fixa para reentrada
+                        entry_type="reentry",  # Marcar como reentrada
+                        entry_price=current_price,
+                        stop_loss=current_price * (1 - settings.stop_loss_pct),
+                        take_profit=current_price * (1 + settings.take_profit_pct),
+                        signal_type=SignalType.LONG,
+                        price=current_price,
+                        indicators=TechnicalIndicators(
+                            distance_to_pivot=distance_2h,
+                            sma=mm1_2h_value,
+                            pivot_center=(mm1_2h_value + mm1_4h_value) / 2
+                        ),
+                        timestamp=datetime.now()
+                    )
+                
+                # REENTRADA SHORT: preço > MM1 em AMBOS timeframes
+                elif current_price > mm1_2h_value and current_price > mm1_4h_value:
+                    return TradingSignal(
+                        symbol=symbol,
+                        side="SELL",
+                        confidence=0.60,  # Confiança fixa para reentrada
+                        entry_type="reentry",  # Marcar como reentrada
+                        entry_price=current_price,
+                        stop_loss=current_price * (1 + settings.stop_loss_pct),
+                        take_profit=current_price * (1 - settings.take_profit_pct),
+                        signal_type=SignalType.SHORT,
+                        price=current_price,
+                        indicators=TechnicalIndicators(
+                            distance_to_pivot=distance_2h,
+                            sma=mm1_2h_value,
+                            pivot_center=(mm1_2h_value + mm1_4h_value) / 2
+                        ),
+                        timestamp=datetime.now()
+                    )
+            
+            return None
+            
+        except Exception as e:
+            logger.log_error(e, context=f"Reentry analysis for {symbol}")
             return None
     
     def _calculate_signal_confidence(self, conditions_2h: dict, conditions_4h: dict, side: str) -> float:
@@ -750,7 +786,7 @@ class TradingEngine:
             order = Order(
                 symbol=signal.symbol,
                 side=signal.side,
-                type="market",
+                order_type=OrderType.MARKET,
                 quantity=position_size,
                 price=signal.entry_price,
                 stop_loss=signal.stop_loss,
@@ -795,15 +831,70 @@ class TradingEngine:
             # Obter info do símbolo para precisão
             symbol_info = await self.exchange.get_symbol_info(symbol)
             
+            if not symbol_info:
+                logger.error("symbol_info_not_found", symbol=symbol)
+                return 0.0
+            
             # Calcular quantidade baseada no valor USD configurado
             usd_amount = settings.position_size_usd
-            quantity = usd_amount / price
+            raw_quantity = usd_amount / price
             
-            # Ajustar para precisão do símbolo
-            if symbol_info:
-                precision = symbol_info.get("quantityPrecision", 3)
-                quantity = round(quantity, precision)
+            # Extrair informações do símbolo
+            precision = int(symbol_info.get("quantityPrecision", 3))
+            min_amount = float(symbol_info.get("minAmount", 0.001))
+            min_cost = float(symbol_info.get("minCost", 1.0))
+            step_size = symbol_info.get("stepSize")
             
+            logger.debug("position_calculation_details",
+                        symbol=symbol,
+                        price=price,
+                        usd_amount=usd_amount,
+                        raw_quantity=raw_quantity,
+                        precision=precision,
+                        min_amount=min_amount,
+                        min_cost=min_cost,
+                        step_size=step_size)
+            
+            # Ajustar quantidade para precisão
+            quantity = round(raw_quantity, precision)
+            
+            # Verificar quantidade mínima
+            if quantity < min_amount:
+                logger.warning("quantity_below_minimum_adjusting",
+                              symbol=symbol,
+                              calculated=quantity,
+                              min_required=min_amount)
+                quantity = min_amount
+            
+            # Verificar valor mínimo (quantidade * preço >= min_cost)
+            total_cost = quantity * price
+            if total_cost < min_cost:
+                required_quantity = min_cost / price
+                quantity = round(required_quantity, precision)
+                logger.warning("cost_below_minimum_adjusting",
+                              symbol=symbol,
+                              original_cost=total_cost,
+                              min_cost=min_cost,
+                              adjusted_quantity=quantity)
+            
+            # Ajustar para step_size se fornecido
+            if step_size and step_size > 0:
+                quantity = round(quantity / step_size) * step_size
+                quantity = round(quantity, precision)  # Re-round após step_size
+            
+            # Verificação final
+            final_cost = quantity * price
+            
+            logger.info("position_size_calculated",
+                       symbol=symbol,
+                       final_quantity=quantity,
+                       final_cost=final_cost,
+                       meets_minimum=quantity >= min_amount and final_cost >= min_cost)
+            
+            if quantity <= 0:
+                logger.error("final_quantity_invalid", symbol=symbol, quantity=quantity)
+                return 0.0
+                
             return quantity
             
         except Exception as e:
@@ -816,62 +907,36 @@ class TradingEngine:
             return
         
         try:
-            # Processar em lotes para reduzir rate limiting
             symbols = list(self.active_positions.keys())
+            latest_prices = await self.exchange.get_latest_prices(symbols)
             
-            # Processar até 3 símbolos por vez para evitar rate limiting
-            batch_size = 3
-            for i in range(0, len(symbols), batch_size):
-                batch_symbols = symbols[i:i + batch_size]
-                
-                # Processar batch sequencialmente para evitar rate limiting
-                for symbol in batch_symbols:
-                    try:
-                        await self._update_single_position(symbol)
-                    except Exception as e:
-                        logger.log_error(e, context=f"Updating position {symbol}")
-                        continue
-                
-                # Delay entre batches para evitar rate limiting
-                if i + batch_size < len(symbols):
-                    await asyncio.sleep(0.5)  # 500ms entre batches
+            for symbol, position in self.active_positions.items():
+                current_price = latest_prices.get(symbol)
+                if current_price and current_price > 0:
+                    # Atualizar posição
+                    position.current_price = current_price
+                    
+                    # Calcular PnL
+                    if position.side == "buy":
+                        pnl = (current_price - position.entry_price) * position.size
+                        pnl_pct = ((current_price / position.entry_price) - 1) * 100
+                    else:  # sell/short
+                        pnl = (position.entry_price - current_price) * position.size
+                        pnl_pct = ((position.entry_price / current_price) - 1) * 100
+                    
+                    position.pnl = pnl
+                    position.pnl_pct = pnl_pct
+                    
+                    logger.debug("position_updated", 
+                               symbol=symbol, 
+                               current_price=current_price,
+                               pnl=pnl, 
+                               pnl_pct=pnl_pct)
+                else:
+                    logger.warning("failed_to_get_latest_price_for_position", symbol=symbol)
         
         except Exception as e:
             logger.log_error(e, context="Updating active positions")
-    
-    async def _update_single_position(self, symbol: str):
-        """Atualiza uma única posição"""
-        try:
-            position = self.active_positions.get(symbol)
-            if not position:
-                return
-            
-            # Obter preço atual usando método otimizado
-            current_price = await self.exchange.get_latest_price(symbol)
-            
-            if current_price and current_price > 0:
-                # Atualizar posição
-                position.current_price = current_price
-                
-                # Calcular PnL
-                if position.side == "buy":
-                    pnl = (current_price - position.entry_price) * position.size
-                    pnl_pct = ((current_price / position.entry_price) - 1) * 100
-                else:  # sell/short
-                    pnl = (position.entry_price - current_price) * position.size
-                    pnl_pct = ((position.entry_price / current_price) - 1) * 100
-                
-                position.pnl = pnl
-                position.pnl_pct = pnl_pct
-                
-                logger.debug("position_updated", 
-                           symbol=symbol, 
-                           current_price=current_price,
-                           pnl=pnl, 
-                           pnl_pct=pnl_pct)
-        
-        except Exception as e:
-            logger.log_error(e, context=f"Updating position for {symbol}")
     
     async def _manage_position_risk(self):
         """Gerencia risco das posições ativas"""
@@ -884,38 +949,38 @@ class TradingEngine:
             for symbol, position in self.active_positions.items():
                 # Verificar stop loss
                 if position.side == "buy":
-                    if position.current_price <= position.stop_loss:
+                    if position.current_price <= position.stop_price:
                         positions_to_close.append((symbol, "stop_loss"))
                         continue
                     
                     # Verificar take profit
-                    if position.take_profit and position.current_price >= position.take_profit:
+                    if position.take_profit_price and position.current_price >= position.take_profit_price:
                         positions_to_close.append((symbol, "take_profit"))
                         continue
                     
                     # Verificar break even
-                    if (position.pnl_pct >= settings.break_even_pct and 
-                        position.stop_loss < position.entry_price):
+                    if (position.unrealized_pnl_pct >= settings.break_even_pct and 
+                        position.stop_price < position.entry_price):
                         # Mover stop loss para break even
-                        position.stop_loss = position.entry_price
+                        position.stop_price = position.entry_price
                         logger.info("stop_loss_moved_to_break_even", 
                                     symbol=symbol)
                     
                     # Verificar trailing stop
-                    if (position.pnl_pct >= settings.trailing_trigger_pct and
+                    if (position.unrealized_pnl_pct >= settings.trailing_trigger_pct and
                         position.current_price > position.entry_price * 1.02):  # 2% acima entrada
                         trailing_stop = position.current_price * (1 - settings.stop_loss_pct)
-                        if trailing_stop > position.stop_loss:
-                            position.stop_loss = trailing_stop
+                        if trailing_stop > position.stop_price:
+                            position.stop_price = trailing_stop
                             logger.info("trailing_stop_updated", 
                                         symbol=symbol, new_stop=trailing_stop)
                 
                 else:  # short position
-                    if position.current_price >= position.stop_loss:
+                    if position.current_price >= position.stop_price:
                         positions_to_close.append((symbol, "stop_loss"))
                         continue
                     
-                    if position.take_profit and position.current_price <= position.take_profit:
+                    if position.take_profit_price and position.current_price <= position.take_profit_price:
                         positions_to_close.append((symbol, "take_profit"))
                         continue
             
@@ -946,7 +1011,7 @@ class TradingEngine:
                 total_pnl_pct=(total_pnl / max(settings.position_size_usd * settings.max_positions, 1000)) * 100,
                 active_positions=len(self.active_positions),
                 max_positions=settings.max_positions,
-                portfolio_heat=len(self.active_positions) / max(settings.max_positions, 1),
+                portfolio_heat=0.0,  # Placeholder - requires current_balance
                 max_drawdown=0.0,  # Placeholder
                 daily_trades=len([s for s in self.recent_signals if s.timestamp.date() == datetime.now().date()]),
                 win_rate=win_rate,
@@ -1054,7 +1119,7 @@ class TradingEngine:
             close_order = Order(
                 symbol=symbol,
                 side="sell" if position.side == "buy" else "buy",
-                type="market",
+                order_type=OrderType.MARKET,
                 quantity=position.size
             )
             
@@ -1094,24 +1159,19 @@ class TradingEngine:
     async def place_manual_order(self, order: Order) -> Optional[OrderResult]:
         """Executa ordem manual"""
         try:
-            result = await self.exchange.place_order(
-                symbol=order.symbol,
-                side=order.side,
-                order_type=order.type,
-                quantity=order.quantity,
-                price=order.price
-            )
+            result = await self.exchange.place_order(order)
             
             if result:
                 return OrderResult(
-                    order_id=result.get("orderId"),
-                    symbol=order.symbol,
-                    side=order.side,
-                    quantity=float(result.get("origQty", order.quantity)),
-                    price=float(result.get("price", order.price or 0)),
-                    avg_price=float(result.get("avgPrice", 0)),
-                    status=result.get("status", "unknown").lower(),
-                    timestamp=datetime.now()
+                    order_id=result.order_id,
+                    symbol=result.symbol,
+                    side=result.side,
+                    status=result.status,
+                    executed_qty=result.executed_qty,
+                    price=result.price,
+                    avg_price=result.avg_price,
+                    commission=result.commission,
+                    timestamp=result.timestamp
                 )
             
             return None
@@ -1154,7 +1214,7 @@ class TradingEngine:
     async def get_performance_metrics(self) -> Dict[str, Any]:
         """Obtém métricas de performance"""
         try:
-            total_pnl = sum(pos.pnl for pos in self.active_positions.values())
+            total_pnl = sum(pos.unrealized_pnl for pos in self.active_positions.values())
             
             return {
                 "total_pnl": total_pnl,
@@ -1224,9 +1284,6 @@ class TradingEngine:
                             "signal_type": signal_type,
                             "signal_strength": signal_strength
                         })
-                        
-                    # Delay entre símbolos para evitar rate limiting
-                    await asyncio.sleep(0.2)
                         
                 except Exception as e:
                     logger.log_error(e, context=f"Getting analysis for {symbol}")

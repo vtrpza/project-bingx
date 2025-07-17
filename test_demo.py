@@ -16,6 +16,8 @@ Uso:
 import asyncio
 import sys
 from datetime import datetime
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.inmemory import InMemoryBackend
 
 from config.settings import settings, TradingMode
 from core.trading_engine import TradingEngine
@@ -26,6 +28,9 @@ logger = get_logger("test_demo")
 
 async def test_quick_demo():
     """Teste rápido da prova de conceito"""
+    
+    # Initialize cache for standalone script
+    FastAPICache.init(InMemoryBackend(), prefix="fastapi-cache")
     
     print("🎯 TESTE RÁPIDO DA PROVA DE CONCEITO")
     print("=" * 50)
@@ -81,7 +86,7 @@ async def test_quick_demo():
         if hasattr(trading_engine, 'active_positions') and trading_engine.active_positions:
             print(f"\n💼 Posições ativas: {len(trading_engine.active_positions)}")
             for symbol, position in trading_engine.active_positions.items():
-                print(f"   • {symbol}: {position.signal_type} - PnL: ${position.unrealized_pnl:.2f}")
+                print(f"   • {symbol}: {position.side} - PnL: ${position.unrealized_pnl:.2f}")
         
         print("\n🏁 Teste concluído!")
         print("💡 Verifique sua conta BingX para ver se as ordens VST foram executadas.")

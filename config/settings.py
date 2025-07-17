@@ -104,6 +104,20 @@ class Settings(BaseSettings):
         le=50,
         description="Período da SMA"
     )
+
+    atr_period: int = Field(
+        default=14,
+        ge=5,
+        le=50,
+        description="Período do ATR"
+    )
+
+    atr_multiplier: float = Field(
+        default=1.5,
+        ge=0.5,
+        le=5.0,
+        description="Multiplicador do ATR para SL/TP"
+    )
     
     # Timeframes
     primary_timeframe: str = Field(
@@ -185,7 +199,7 @@ class Settings(BaseSettings):
     
     # Concorrência
     max_concurrent_requests: int = Field(
-        default=3,  # Reduced from 10 to prevent 429 errors
+        default=5,  # Moderado, respeitando o rate limit
         ge=1,
         le=50,
         description="Requisições simultâneas máximas"
@@ -199,9 +213,9 @@ class Settings(BaseSettings):
         description="TTL do cache em segundos"
     )
     
-    # Rate Limiting
+    # Rate Limiting (BingX permite ≤ 10 req/s)
     api_requests_per_second: int = Field(
-        default=10,
+        default=10,  # Máximo permitido pela BingX
         ge=1,
         le=50,
         description="Requisições por segundo para API"
@@ -324,6 +338,11 @@ class Settings(BaseSettings):
     bingx_futures_path: str = Field(
         default="/openApi/swap/v2",
         description="BingX Futures API path"
+    )
+    
+    bingx_websocket_base_url: str = Field(
+        default="wss://open-api-ws.bingx.com/market",
+        description="BingX WebSocket API base URL"
     )
     
     # =============================================

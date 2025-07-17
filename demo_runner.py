@@ -22,6 +22,8 @@ import sys
 from datetime import datetime, timedelta
 from typing import List, Optional
 import logging
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.inmemory import InMemoryBackend
 
 from config.settings import settings, TradingMode
 from core.trading_engine import TradingEngine
@@ -50,7 +52,7 @@ class DemoRunner:
         settings.position_size_usd = 10.0  # Posições pequenas para demo
         settings.max_positions = 5  # Máximo 5 posições
         settings.min_confidence = 0.6  # Confiança mínima
-        settings.scan_interval_seconds = 30  # Scan a cada 30 segundos
+        settings.scan_interval_seconds = 120  # Scan a cada 2 minutos para reduzir rate limiting
         
         # Símbolos limitados para demo
         settings.allowed_symbols = self.symbols
@@ -67,6 +69,9 @@ class DemoRunner:
         try:
             # Configurar ambiente
             await self.setup_demo_environment()
+            
+            # Inicializar cache para script standalone
+            FastAPICache.init(InMemoryBackend(), prefix="fastapi-cache")
             
             # Inicializar trading engine
             self.trading_engine = TradingEngine()
@@ -114,6 +119,12 @@ class DemoRunner:
             logger.info("⏹️  Finalizando demonstração...")
             await self.trading_engine.stop()
             
+            # Fechar conexões explicitamente para evitar warnings
+            if hasattr(self.trading_engine, 'exchange_manager') and self.trading_engine.exchange_manager:
+                await self.trading_engine.exchange_manager.close()
+            
+            await FastAPICache.close() # Fechar o cache explicitamente
+            
             # Relatório final
             await self.print_final_report()
             
@@ -121,6 +132,9 @@ class DemoRunner:
             logger.error(f"❌ Erro durante demonstração: {e}")
             if self.trading_engine:
                 await self.trading_engine.stop()
+                # Fechar conexões em caso de erro também
+                if hasattr(self.trading_engine, 'exchange_manager') and self.trading_engine.exchange_manager:
+                    await self.trading_engine.exchange_manager.close()
             raise
             
     async def print_status_report(self):
@@ -184,8 +198,8 @@ def main():
     # Configurar duração
     duration = 60 if args.quick else args.duration
     
-    # Configurar símbolos
-    symbols = args.symbols or ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "ADAUSDT"]
+    # Configurar símbolos (formato correto BTC-USDT)
+    symbols = args.symbols or ["BTC-USDT", "ETH-USDT", "BNB-USDT"]  # Reduzido para 3 símbolos
     
     # Criar e executar demo
     demo = DemoRunner(duration=duration, symbols=symbols)

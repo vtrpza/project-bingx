@@ -31,6 +31,10 @@ cryptography==42.0.5
 
 # Performance & Caching
 cachetools==5.3.3
+aiolimiter==1.2.1
+bingx==0.0.73
+backoff==2.2.1
+fastapi-cache2==0.2.2
 
 # Development & Testing (optional)
 pytest==8.0.0

@@ -60,6 +60,13 @@ class MarketData(BaseModel):
         return v
 
 
+class TickerData(BaseModel):
+    """Dados simples de ticker"""
+    symbol: str
+    price: float = Field(gt=0, description="Preço atual")
+    volume_24h: float = Field(ge=0, description="Volume 24h")
+
+
 class TechnicalIndicators(BaseModel):
     """Indicadores técnicos"""
     rsi: Optional[float] = Field(None, ge=0, le=100, description="RSI value")
@@ -89,9 +96,16 @@ class TradingSignal(BaseModel):
     """Sinal de trading"""
     symbol: str = Field(..., description="Par de trading (ex: BTC-USDT)")
     signal_type: SignalType = Field(..., description="Tipo do sinal")
+    side: OrderSide = Field(..., description="Lado do sinal (compra/venda)")
     timestamp: datetime = Field(default_factory=datetime.now)
     price: float = Field(gt=0, description="Preço atual")
     confidence: float = Field(ge=0, le=1, description="Confiança do sinal (0-1)")
+    entry_type: str = Field("primary", description="Tipo de entrada (primary, reentry)")
+    entry_price: Optional[float] = Field(None, gt=0, description="Preço de entrada sugerido")
+    stop_loss: Optional[float] = Field(None, description="Preço de Stop Loss sugerido")
+    take_profit: Optional[float] = Field(None, description="Preço de Take Profit sugerido")
+
+    
     
     # Indicadores
     indicators: TechnicalIndicators
@@ -171,7 +185,7 @@ class OrderResult(BaseModel):
 class Position(BaseModel):
     """Posição de trading"""
     symbol: str = Field(..., description="Par de trading")
-    side: SignalType = Field(..., description="Lado da posição")
+    side: OrderSide = Field(..., description="Lado da posição")
     size: float = Field(..., description="Tamanho da posição")
     entry_price: float = Field(gt=0, description="Preço de entrada")
     current_price: float = Field(gt=0, description="Preço atual")
@@ -209,7 +223,7 @@ class Position(BaseModel):
 class TradePerformance(BaseModel):
     """Performance de um trade"""
     symbol: str
-    side: SignalType
+    side: OrderSide
     entry_price: float
     exit_price: float
     quantity: float

@@ -19,7 +19,7 @@ from utils.logger import get_logger
 logger = get_logger("indicators")
 
 
-class TechnicalIndicators:
+class IndicatorCalculator:
     """Calculadora de indicadores técnicos enterprise com cache otimizado"""
     
     # Cache global para indicadores calculados
@@ -208,7 +208,52 @@ class TechnicalIndicators:
             logger.log_error(e, context="SMA calculation")
             # Fallback para pandas
             return prices.rolling(window=period).mean()
-    
+
+    @classmethod
+    def calculate_mm1(cls, prices: pd.Series) -> pd.Series:
+        """
+        Calcula MM1 (Média Móvel de 1 período)
+        Para período 1, MM1 é equivalente ao próprio preço
+        """
+        # MM1 com período 1 é simplesmente o próprio preço
+        return prices.copy()
+
+    @classmethod
+    def calculate_atr(cls, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        """
+        Calcula ATR (Average True Range) com cache otimizado
+        """
+        if len(df) < period:
+            return pd.Series(np.nan, index=df.index)
+
+        # Verificar cache primeiro
+        data_hash = cls._get_data_hash(df["close"])
+        cache_key = cls._get_cache_key(data_hash, "atr", period=period)
+
+        cached_result = cls._get_from_cache(cache_key)
+        if cached_result is not None:
+            return pd.Series(cached_result, index=df.index)
+
+        try:
+            high = df["high"]
+            low = df["low"]
+            close = df["close"]
+
+            tr1 = high - low
+            tr2 = np.abs(high - close.shift())
+            tr3 = np.abs(low - close.shift())
+
+            true_range = pd.DataFrame({'tr1': tr1, 'tr2': tr2, 'tr3': tr3}).max(axis=1)
+            atr_values = true_range.ewm(span=period, adjust=False).mean()
+
+            # Cache o resultado
+            cls._set_cache(cache_key, atr_values.values)
+
+            return atr_values
+        except Exception as e:
+            logger.log_error(e, context="ATR calculation")
+            return pd.Series(np.nan, index=df.index)
+
     @classmethod
     def calculate_pivot_center(cls, df: pd.DataFrame, period: int = 1) -> pd.Series:
         """
@@ -265,6 +310,27 @@ class TechnicalIndicators:
             return pd.Series(0, index=sma.index)
     
     @classmethod
+    def calculate_distance_to_mm1(cls, current_price: float, mm1: pd.Series) -> float:
+        """
+        Calcula distância percentual entre preço atual e MM1 (último valor)
+        Para sistema de reentrada
+        """
+        try:
+            if mm1.empty or pd.isna(mm1.iloc[-1]):
+                return 0.0
+            
+            mm1_value = float(mm1.iloc[-1])
+            if mm1_value <= 0:
+                return 0.0
+            
+            distance = abs(current_price - mm1_value) / mm1_value * 100
+            return distance
+            
+        except Exception as e:
+            logger.log_error(e, context="Distance to MM1 calculation")
+            return 0.0
+    
+    @classmethod
     def calculate_slope(cls, center: pd.Series, sma: pd.Series, lookback: int = 5) -> pd.Series:
         """
         Calcula slope (inclinação) do movimento com cache otimizado
@@ -305,7 +371,7 @@ class TechnicalIndicators:
         
         cached_result = cls._get_from_cache(cache_key)
         if cached_result is not None:
-            for col in ["rsi", "sma", "center", "distance_to_pivot", "slope"]:
+            for col in ["rsi", "sma", "mm1", "center", "distance_to_pivot", "slope"]:
                 if col in cached_result:
                     df[col] = cached_result[col]
             return df
@@ -325,6 +391,9 @@ class TechnicalIndicators:
             else:
                 df["sma"] = np.nan
             
+            # MM1 (Média Móvel de 1 período - equivale ao próprio preço)
+            df["mm1"] = cls.calculate_mm1(df["close"])
+            
             # Pivot Center
             if len(df) >= 3:
                 df["center"] = cls.calculate_pivot_center(df)
@@ -334,11 +403,13 @@ class TechnicalIndicators:
             # Métricas derivadas
             df["distance_to_pivot"] = cls.calculate_distance_to_pivot(df["sma"], df["center"])
             df["slope"] = cls.calculate_slope(df["center"], df["sma"])
+            df["atr"] = cls.calculate_atr(df)
             
             # Cache o resultado completo
             indicator_data = {
                 "rsi": df["rsi"].values,
                 "sma": df["sma"].values,
+                "mm1": df["mm1"].values,
                 "center": df["center"].values,
                 "distance_to_pivot": df["distance_to_pivot"].values,
                 "slope": df["slope"].values
@@ -434,7 +505,7 @@ class IndicatorOptimizer:
         
         for period in periods:
             try:
-                rsi = TechnicalIndicators.calculate_rsi(df["close"], period)
+                rsi = IndicatorCalculator.calculate_rsi(df["close"], period)
                 
                 # Score baseado em:
                 # 1. Quantidade de sinais válidos
@@ -466,7 +537,7 @@ class IndicatorOptimizer:
         
         for period in periods:
             try:
-                sma = TechnicalIndicators.calculate_sma(df["close"], period)
+                sma = IndicatorCalculator.calculate_sma(df["close"], period)
                 
                 # Score baseado na responsividade vs suavização
                 price_crosses = ((df["close"] > sma) != (df["close"].shift(1) > sma.shift(1))).sum()
