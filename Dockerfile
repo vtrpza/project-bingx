@@ -9,10 +9,11 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 WORKDIR /app
 
 # Instalar dependências do sistema
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y     build-essential     curl     && rm -rf /var/lib/apt/lists/*
+
+# Instalar Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}" 
 
 # Copiar requirements primeiro para cache de layers
 COPY requirements.txt .
