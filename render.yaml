@@ -2,7 +2,7 @@ services:
   - type: web
     name: trading-bot-bingx
     env: python
-    buildCommand: "export PATH="/usr/local/cargo/bin:$PATH" && pip install -r requirements.txt"
+    buildCommand: "export CARGO_HOME="/opt/render/project/src/.cargo" && export PATH="/usr/local/cargo/bin:$PATH" && pip install -r requirements.txt"
     startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
     plan: free
     envVars:
