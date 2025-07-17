@@ -186,34 +186,3 @@ class DemoRunner:
         except Exception as e:
             logger.error(f"Erro ao gerar relatório final: {e}")
 
-def main():
-    """Função principal"""
-    parser = argparse.ArgumentParser(description="Demo Runner - Prova de Conceito")
-    parser.add_argument("--duration", type=int, default=300, help="Duração em segundos (padrão: 300)")
-    parser.add_argument("--symbols", nargs="+", help="Símbolos para monitorar")
-    parser.add_argument("--quick", action="store_true", help="Execução rápida (60 segundos)")
-    
-    args = parser.parse_args()
-    
-    # Configurar duração
-    duration = 60 if args.quick else args.duration
-    
-    # Configurar símbolos (formato correto BTC-USDT)
-    symbols = args.symbols or ["BTC-USDT", "ETH-USDT", "BNB-USDT"]  # Reduzido para 3 símbolos
-    
-    # Criar e executar demo
-    demo = DemoRunner(duration=duration, symbols=symbols)
-    
-    try:
-        # Executar demonstração
-        asyncio.run(demo.run_demo())
-        
-    except KeyboardInterrupt:
-        logger.info("🛑 Demonstração interrompida pelo usuário")
-        sys.exit(0)
-    except Exception as e:
-        logger.error(f"❌ Erro fatal: {e}")
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()

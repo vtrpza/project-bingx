@@ -16,3 +16,4 @@ services:
         sync: false
       - key: LOG_LEVEL
         value: INFO
+    healthCheckPath: /health

@@ -31,13 +31,33 @@ import structlog
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
+import logging # Import logging module
 
-from config.settings import settings
+from config.settings import settings, TradingMode # Import TradingMode
 from core.trading_engine import TradingEngine
+from core.demo_monitor import get_demo_monitor # Import get_demo_monitor
+from demo_runner import DemoRunner # Import DemoRunner
 from api.trading_routes import router as trading_router, register_trading_engine
 from api.analytics_routes import router as analytics_router
 from api.config_routes import router as config_router
 from utils.logger import setup_logging
+
+# Custom logging handler for capturing demo output
+class DemoLogHandler(logging.Handler):
+    def __init__(self, level=logging.NOTSET):
+        super().__init__(level)
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(self.format(record))
+
+    def get_logs(self):
+        return self.records
+
+    def clear_logs(self):
+        self.records.clear()
+
+demo_log_handler = DemoLogHandler()
 
 def serialize_datetime(obj):
     """Convert datetime objects to ISO format strings for JSON serialization"""
@@ -224,12 +244,54 @@ class ConnectionManager:
 # Global instances
 trading_engine = None
 connection_manager = ConnectionManager()
+demo_manager = None # Global instance for DemoManager
+
+class DemoManager:
+    def __init__(self):
+        self.demo_task = None
+        self.is_running = False
+        self.last_report = {}
+        self.log_handler = demo_log_handler # Use the global handler
+        logging.getLogger("demo_runner").addHandler(self.log_handler)
+        logging.getLogger("demo_runner").setLevel(logging.INFO) # Ensure logs are captured
+
+    async def start_demo(self, duration: int = 300, symbols: Optional[List[str]] = None):
+        if self.is_running:
+            return {"status": "error", "message": "Demo is already running."}
+        
+        self.log_handler.clear_logs() # Clear logs before new run
+        self.is_running = True
+        
+        # Create a new DemoRunner instance for each run
+        demo_runner_instance = DemoRunner(duration=duration, symbols=symbols)
+        
+        # Run the demo in a separate task
+        self.demo_task = asyncio.create_task(self._run_demo_task(demo_runner_instance))
+        
+        return {"status": "success", "message": "Demo started."}
+
+    async def _run_demo_task(self, demo_runner_instance: DemoRunner):
+        try:
+            await demo_runner_instance.run_demo()
+        except Exception as e:
+            logger.error(f"Demo task failed: {e}")
+        finally:
+            self.is_running = False
+            self.demo_task = None
+            logger.info("Demo task finished.")
+
+    def get_status(self):
+        return {
+            "is_running": self.is_running,
+            "logs": self.log_handler.get_logs(),
+            "last_report": self.last_report # To be updated by demo_runner if needed
+        }
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle da aplicação - startup e shutdown"""
-    global trading_engine
+    global trading_engine, demo_manager
     
     # Startup
     logger.info("starting_trading_bot", 
@@ -246,10 +308,13 @@ async def lifespan(app: FastAPI):
     # Register trading engine with API routes
     register_trading_engine(trading_engine)
     
+    # Initialize DemoManager
+    demo_manager = DemoManager()
+    
     # Start background tasks
     asyncio.create_task(trading_engine.start())
-    asyncio.create_task(status_broadcaster())
-    asyncio.create_task(heartbeat_manager())
+    # asyncio.create_task(status_broadcaster()) # Commented out as per user request
+    # asyncio.create_task(heartbeat_manager()) # Commented out as per user request
     
     logger.info("trading_bot_started")
     
@@ -280,7 +345,7 @@ app.add_middleware(
 )
 
 # Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Include routers
 app.include_router(trading_router, prefix="/api/v1/trading", tags=["Trading"])
@@ -726,20 +791,43 @@ async def dashboard():
     """
 
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint para updates em tempo real"""
-    await connection_manager.connect(websocket)
-    try:
-        while True:
-            # Keep connection alive without blocking on receive
-            # Just wait and let the status_broadcaster send data
-            await asyncio.sleep(1)
-    except WebSocketDisconnect:
-        connection_manager.disconnect(websocket)
-    except Exception as e:
-        logger.error("websocket_error", error=str(e))
-        connection_manager.disconnect(websocket)
+# @app.websocket("/ws")
+# async def websocket_endpoint(websocket: WebSocket):
+#     """WebSocket endpoint para updates em tempo real"""
+#     await connection_manager.connect(websocket)
+#     try:
+#         while True:
+#             # Keep connection alive without blocking on receive
+#             # Just wait and let the status_broadcaster send data
+#             await asyncio.sleep(1)
+#     except WebSocketDisconnect:
+#         connection_manager.disconnect(websocket)
+#     except Exception as e:
+#         logger.error("websocket_error", error=str(e))
+#         connection_manager.disconnect(websocket)
+
+from typing import List, Optional
+from pydantic import BaseModel
+
+class DemoStartRequest(BaseModel):
+    duration: int = 300
+    symbols: Optional[List[str]] = None
+
+@app.post("/demo/start")
+async def start_demo(request: DemoStartRequest):
+    if not demo_manager:
+        return {"status": "error", "message": "Demo manager not initialized."}
+    
+    response = await demo_manager.start_demo(duration=request.duration, symbols=request.symbols)
+    return response
+
+@app.get("/demo/status")
+async def get_demo_status():
+    if not demo_manager:
+        return {"status": "error", "message": "Demo manager not initialized."}
+    
+    return demo_manager.get_status()
+
 
 
 @app.get("/health")
@@ -778,6 +866,101 @@ async def health_check():
             "version": "1.0.0",
             "error": str(e)
         }
+
+@app.get("/", response_class=HTMLResponse)
+async def demo_dashboard():
+    """Simple dashboard for demo control and monitoring"""
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Demo Dashboard</title>
+        <style>
+            body { font-family: monospace; background-color: #1e1e1e; color: #d4d4d4; padding: 20px; }
+            .container { max-width: 800px; margin: 0 auto; background-color: #252526; padding: 20px; border-radius: 8px; }
+            h1 { color: #569cd6; }
+            h2 { color: #9cd656; }
+            button { background-color: #007acc; color: white; padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
+            button:hover { background-color: #005f99; }
+            pre { background-color: #1c1c1c; padding: 15px; border-radius: 5px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; }
+            .status-indicator { font-weight: bold; }
+            .status-running { color: #00d4aa; }
+            .status-stopped { color: #ff6b6b; }
+            .log-entry { margin-bottom: 5px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Demo Trading Bot Control</h1>
+            
+            <h2>Start Demo</h2>
+            <p>Duration (seconds): <input type="number" id="duration" value="60"></p>
+            <p>Symbols (comma-separated, e.g., BTC-USDT,ETH-USDT): <input type="text" id="symbols" value="BTC-USDT,ETH-USDT"></p>
+            <button onclick="startDemo()">Start Demo</button>
+            <p id="start-message"></p>
+
+            <h2>Demo Status</h2>
+            <p>Status: <span id="demo-status" class="status-stopped">Stopped</span></p>
+            <button onclick="getDemoStatus()">Refresh Status</button>
+            
+            <h2>Demo Logs</h2>
+            <pre id="demo-logs"></pre>
+        </div>
+
+        <script>
+            async function startDemo() {
+                const duration = document.getElementById('duration').value;
+                const symbolsInput = document.getElementById('symbols').value;
+                const symbols = symbolsInput ? symbolsInput.split(',').map(s => s.trim()) : [];
+
+                const response = await fetch('/demo/start', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ duration: parseInt(duration), symbols: symbols })
+                });
+                const data = await response.json();
+                document.getElementById('start-message').textContent = JSON.stringify(data, null, 2);
+                getDemoStatus(); // Refresh status after starting
+            }
+
+            async function getDemoStatus() {
+                const response = await fetch('/demo/status');
+                const data = await response.json();
+                
+                const statusElement = document.getElementById('demo-status');
+                const logsElement = document.getElementById('demo-logs');
+
+                if (data.is_running) {
+                    statusElement.textContent = 'Running';
+                    statusElement.className = 'status-indicator status-running';
+                } else {
+                    statusElement.textContent = 'Stopped';
+                    statusElement.className = 'status-indicator status-stopped';
+                }
+                
+                logsElement.innerHTML = '';
+                if (data.logs && data.logs.length > 0) {
+                    data.logs.forEach(log => {
+                        const logEntry = document.createElement('div');
+                        logEntry.className = 'log-entry';
+                        logEntry.textContent = log;
+                        logsElement.appendChild(logEntry);
+                    });
+                } else {
+                    logsElement.textContent = 'No logs available.';
+                }
+            }
+
+            // Initial status load
+            getDemoStatus();
+            // Refresh status every 5 seconds
+            setInterval(getDemoStatus, 5000);
+        </script>
+    </body>
+    </html>
+    """
 
 
 if __name__ == "__main__":
