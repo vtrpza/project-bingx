@@ -54,13 +54,14 @@ class DemoLogHandler(logging.Handler):
         try:
             log_entry = json.loads(self.format(record))
             # Format the log entry for better readability
-            formatted_log = f"{log_entry.get("timestamp", "N/A")} [{log_entry.get("level", "N/A").upper()}] {log_entry.get("event", "N/A")}"
-            for key, value in log_entry.items():
-                if key not in ["timestamp", "level", "event", "logger"]: # Exclude already used fields
-                    formatted_log += f" {key}='{value}'"
-            self.records.append(formatted_log)
+            self.records.append(log_entry)
         except json.JSONDecodeError:
-            self.records.append(self.format(record)) # Fallback for non-JSON logs
+            # Fallback for non-JSON logs, store as a simple message with default level/timestamp
+            self.records.append({
+                "timestamp": datetime.now().isoformat(),
+                "level": "info",
+                "event": self.format(record)
+            })
 
     def get_logs(self):
         return self.records
@@ -468,10 +469,19 @@ async def demo_dashboard():
                 logsElement.innerHTML = '';
                 if (data.logs && data.logs.length > 0) {
                     data.logs.forEach(log => {
-                        const logEntry = document.createElement('div');
-                        logEntry.className = 'log-entry';
-                        logEntry.textContent = log;
-                        logsElement.appendChild(logEntry);
+                        const logEntryDiv = document.createElement('div');
+                        logEntryDiv.className = 'log-entry';
+                        
+                        let logMessage = `[${new Date(log.timestamp).toLocaleTimeString()}] [${log.level.toUpperCase()}] ${log.event || log.message}`;
+                        
+                        // Add other fields
+                        for (const key in log) {
+                            if (key !== 'timestamp' && key !== 'level' && key !== 'event' && key !== 'message') {
+                                logMessage += ` ${key}=${JSON.stringify(log[key])}`;
+                            }
+                        }
+                        logEntryDiv.textContent = logMessage;
+                        logsElement.appendChild(logEntryDiv);
                     });
                 } else {
                     logsElement.textContent = 'Nenhum log disponível.';
