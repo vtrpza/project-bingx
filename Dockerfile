@@ -8,6 +8,9 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 # Configurar diretório de trabalho
 WORKDIR /app
 
+# After WORKDIR /app
+RUN mkdir -p /app/static
+
 # Instalar dependências do sistema
 RUN apt-get update && apt-get install -y     build-essential     curl     && rm -rf /var/lib/apt/lists/*
 
