@@ -831,42 +831,7 @@ async def get_demo_status():
 
 
 
-@app.get("/health")
-@app.get("/healthz")  # Alternative endpoint for Render
-async def health_check():
-    """Health check endpoint for Render and monitoring"""
-    try:
-        status = "healthy"
-        uptime = datetime.now().isoformat()
-        
-        # Check trading engine status
-        engine_healthy = False
-        if trading_engine:
-            try:
-                engine_status = await trading_engine.health_check()
-                engine_healthy = engine_status.get("engine_running", False)
-                status = "healthy" if engine_healthy else "degraded"
-            except Exception as e:
-                logger.error(f"Health check engine error: {e}")
-                status = "degraded"
-        
-        return {
-            "status": status,
-            "timestamp": uptime,
-            "service": "trading-bot-bingx",
-            "version": "1.0.0",
-            "engine_healthy": engine_healthy,
-            "mode": "demo" if settings.trading_mode == "demo" else "real"
-        }
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return {
-            "status": "unhealthy",
-            "timestamp": datetime.now().isoformat(),
-            "service": "trading-bot-bingx",
-            "version": "1.0.0",
-            "error": str(e)
-        }
+
 
 @app.get("/", response_class=HTMLResponse)
 async def demo_dashboard():
