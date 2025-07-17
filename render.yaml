@@ -2,7 +2,7 @@ services:
   - type: web
     name: trading-bot-bingx
     env: python
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source $HOME/.cargo/env && pip install -r requirements.txt"
     startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
     plan: free
     envVars:
