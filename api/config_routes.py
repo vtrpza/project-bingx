@@ -9,102 +9,28 @@ from fastapi import APIRouter, HTTPException
 from typing import Dict, Any
 
 from data.models import ConfigUpdateRequest
-from config.settings import settings, update_settings, apply_risk_profile, RiskProfile
+from config.settings import settings, update_settings, apply_risk_profile, RiskProfile, get_settings
 from utils.logger import get_logger
 
 logger = get_logger("config_routes")
 router = APIRouter()
 
 
-@router.get("/current")
-async def get_current_config():
-    """
-    Obtém configuração atual completa
-    """
-    try:
-        config = settings.to_dict()
-        
-        # Mascarar dados sensíveis
-        if "bingx_secret_key" in config and config["bingx_secret_key"]:
-            config["bingx_secret_key"] = "***masked***"
-        
-        return {
-            "message": "Current configuration retrieved",
-            "config": config,
-            "risk_profile": settings.risk_profile,
-            "trading_mode": settings.trading_mode
-        }
-        
-    except Exception as e:
-        logger.log_error(e, context="Getting current config")
-        raise HTTPException(status_code=500, detail=str(e))
+@router.get("/current", summary="Obtém a configuração atual")
+def get_current_config():
+    return get_settings().dict()
 
 
-@router.post("/update")
-async def update_config(config_update: ConfigUpdateRequest):
-    """
-    Atualiza configuração dinamicamente
-    """
-    try:
-        # Converter request para dict, removendo None values
-        update_data = {k: v for k, v in config_update.model_dump().items() if v is not None}
-        
-        if not update_data:
-            raise HTTPException(status_code=400, detail="No valid configuration provided")
-        
-        # Aplicar atualizações
-        old_config = settings.to_dict()
-        updated_settings = update_settings(update_data)
-        
-        # Log das mudanças
-        changed_fields = {k: v for k, v in update_data.items() if old_config.get(k) != v}
-        logger.log_config_update(changed_fields)
-        
-        return {
-            "message": "Configuration updated successfully",
-            "updated_fields": list(changed_fields.keys()),
-            "new_values": changed_fields,
-            "current_mode": updated_settings.trading_mode,
-            "current_risk_profile": updated_settings.risk_profile
-        }
-        
-    except Exception as e:
-        logger.log_error(e, context="Updating configuration")
-        raise HTTPException(status_code=500, detail=str(e))
+@router.post("/update", summary="Atualiza a configuração")
+def update_config(new_settings: dict):
+    updated_settings = update_settings(new_settings)
+    return updated_settings.dict()
 
 
-@router.post("/risk-profile/{profile}")
+@router.post("/risk-profile/{profile}", summary="Aplica um perfil de risco")
 async def set_risk_profile(profile: RiskProfile):
-    """
-    Aplica perfil de risco predefinido
-    """
-    try:
-        old_profile = settings.risk_profile
-        updated_settings = apply_risk_profile(profile)
-        
-        logger.log_config_update({
-            "risk_profile": f"{old_profile} -> {profile}",
-            "position_size_usd": updated_settings.position_size_usd,
-            "max_positions": updated_settings.max_positions,
-            "min_confidence": updated_settings.min_confidence
-        })
-        
-        return {
-            "message": f"Risk profile changed to {profile}",
-            "old_profile": old_profile,
-            "new_profile": profile,
-            "updated_parameters": {
-                "position_size_usd": updated_settings.position_size_usd,
-                "max_positions": updated_settings.max_positions,
-                "min_confidence": updated_settings.min_confidence,
-                "stop_loss_pct": updated_settings.stop_loss_pct,
-                "max_portfolio_risk": updated_settings.max_portfolio_risk
-            }
-        }
-        
-    except Exception as e:
-        logger.log_error(e, context=f"Setting risk profile {profile}")
-        raise HTTPException(status_code=500, detail=str(e))
+    updated_settings = apply_risk_profile(profile)
+    return updated_settings.dict()
 
 
 @router.post("/mode/{mode}")

@@ -83,47 +83,57 @@ class IndicatorCalculator:
     def _rsi_optimized(prices: np.ndarray, period: int = 13) -> np.ndarray:
         """RSI otimizado com NumPy vectorization"""
         n = len(prices)
-        deltas = np.diff(prices)
-        
-        # Inicializar arrays
-        gains = np.zeros(n)
-        losses = np.zeros(n)
-        rsi = np.full(n, np.nan)
-        
-        # Separar gains e losses
-        for i in range(1, n):
-            delta = deltas[i-1]
-            if delta > 0:
-                gains[i] = delta
-            else:
-                losses[i] = -delta
-        
-        # Calcular médias móveis
-        if n > period:  # Changed from >= to > to ensure we have enough data
-            # Primeira média (SMA)
-            avg_gain = np.mean(gains[1:period+1])
-            avg_loss = np.mean(losses[1:period+1])
-            
-            # Primeira RSI
+        logger.debug("rsi_optimized_input", n=n, period=period)
+
+        if n <= period: # Need at least period + 1 prices to calculate RSI
+            logger.debug("rsi_optimized_insufficient_data", n=n, period=period)
+            return np.full(n, np.nan)
+
+        deltas = np.diff(prices) # size n-1
+
+        # Initialize gains and losses arrays, size n-1
+        gains = np.zeros_like(deltas)
+        losses = np.zeros_like(deltas)
+
+        # Separate gains and losses
+        gains[deltas > 0] = deltas[deltas > 0]
+        losses[deltas < 0] = -deltas[deltas < 0]
+
+        rsi = np.full(n, np.nan) # Output RSI array, size n
+
+        # Calculate initial SMA for gains and losses over the first 'period' deltas
+        initial_avg_gain = np.mean(gains[:period])
+        initial_avg_loss = np.mean(losses[:period])
+
+        # Calculate first RSI value, which corresponds to the (period+1)-th price (index 'period')
+        if initial_avg_loss != 0:
+            rs = initial_avg_gain / initial_avg_loss
+            rsi[period] = 100 - (100 / (1 + rs))
+        else:
+            rsi[period] = 100 if initial_avg_gain > 0 else 0
+
+        # Subsequent RSI values using EMA
+        avg_gain = initial_avg_gain
+        avg_loss = initial_avg_loss
+
+        # Iterate from the (period+1)-th delta (index 'period') up to the last delta (index n-2)
+        for i in range(period, n - 1):
+            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+
             if avg_loss != 0:
                 rs = avg_gain / avg_loss
-                rsi[period] = 100 - (100 / (1 + rs))
-            
-            # RSI subsequentes (EMA)
-            for i in range(period+1, n):
-                avg_gain = (avg_gain * (period-1) + gains[i]) / period
-                avg_loss = (avg_loss * (period-1) + losses[i]) / period
-                
-                if avg_loss != 0:
-                    rs = avg_gain / avg_loss
-                    rsi[i] = 100 - (100 / (1 + rs))
-        
+                rsi[i + 1] = 100 - (100 / (1 + rs))
+            else:
+                rsi[i + 1] = 100 if avg_gain > 0 else 0
+
         return rsi
     
     @staticmethod
     def _sma_optimized(prices: np.ndarray, period: int = 13) -> np.ndarray:
         """SMA otimizada com NumPy"""
         n = len(prices)
+        logger.debug("sma_optimized_input", n=n, period=period)
         sma = np.full(n, np.nan)
         
         if n >= period:
@@ -141,7 +151,7 @@ class IndicatorCalculator:
         if period is None:
             period = settings.rsi_period
         
-        if len(prices) < period:
+        if len(prices) <= period:
             return pd.Series(np.nan, index=prices.index)
         
         # Verificar cache primeiro
@@ -378,18 +388,13 @@ class IndicatorCalculator:
         
         try:
             start_time = time.time()
-            
+            logger.debug("apply_all_indicators_start", data_points=len(df), rsi_period=settings.rsi_period, sma_period=settings.sma_period)
+
             # RSI
-            if len(df) >= settings.rsi_period:
-                df["rsi"] = cls.calculate_rsi(df["close"], settings.rsi_period)
-            else:
-                df["rsi"] = np.nan
+            df["rsi"] = cls.calculate_rsi(df["close"], settings.rsi_period)
             
             # SMA (MM1 no sistema original)
-            if len(df) >= settings.sma_period:
-                df["sma"] = cls.calculate_sma(df["close"], settings.sma_period)
-            else:
-                df["sma"] = np.nan
+            df["sma"] = cls.calculate_sma(df["close"], settings.sma_period)
             
             # MM1 (Média Móvel de 1 período - equivale ao próprio preço)
             df["mm1"] = cls.calculate_mm1(df["close"])
@@ -445,19 +450,24 @@ class IndicatorCalculator:
             latest = df.iloc[-1]
             
             # Condições básicas
-            rsi_ok = not pd.isna(latest["rsi"]) and rsi_min < latest["rsi"] < rsi_max
-            slope_ok = not pd.isna(latest["slope"]) and latest["slope"] >= -0.1  # Aceita slope negativo pequeno
-            distance_ok = latest["distance_to_pivot"] >= 0.1  # Muito reduzido para gerar mais sinais
+            rsi_ok = not pd.isna(latest["rsi"]) and (settings.rsi_min - 5) < latest["rsi"] < (settings.rsi_max + 5) # Wider range
+            slope_ok = not pd.isna(latest["slope"]) and latest["slope"] >= -0.2  # More permissive slope
+            distance_ok = latest["distance_to_pivot"] >= 0.5  # More permissive distance
             
-            # Cruzamentos (SMA vs Center)
-            if len(df) >= 2:
+            # Cruzamentos (SMA vs Center) com janela de oportunidade
+            if len(df) >= 3: # Reduced lookback for window
                 current_sma = latest["sma"]
                 current_center = latest["center"]
-                prev_sma = df.iloc[-2]["sma"]
-                prev_center = df.iloc[-2]["center"]
                 
-                long_cross = (current_sma > current_center) and (prev_sma <= prev_center)
-                short_cross = (current_sma < current_center) and (prev_sma >= prev_center)
+                # Verificar se um cruzamento ocorreu nas últimas 3 velas
+                cross_up_window = (df['sma'].tail(3) > df['center'].tail(3)) & (df['sma'].shift(1).tail(3) <= df['center'].shift(1).tail(3))
+                cross_down_window = (df['sma'].tail(3) < df['center'].tail(3)) & (df['sma'].shift(1).tail(3) >= df['center'].shift(1).tail(3))
+
+                # Condição de compra: SMA está acima do center E um cruzamento para cima ocorreu recentemente
+                long_cross = (current_sma > current_center) and cross_up_window.any()
+                
+                # Condição de venda: SMA está abaixo do center E um cruzamento para baixo ocorreu recentemente
+                short_cross = (current_sma < current_center) and cross_down_window.any()
             else:
                 long_cross = False
                 short_cross = False

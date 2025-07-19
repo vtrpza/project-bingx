@@ -38,7 +38,7 @@ class DemoRunner:
     
     def __init__(self, duration: int = 300, symbols: Optional[List[str]] = None):
         self.duration = duration  # Duração em segundos
-        self.symbols = symbols or settings.allowed_symbols[:5]  # Usar primeiros 5 símbolos
+        self.symbols = symbols if symbols is not None else settings.allowed_symbols  # Usar todos os símbolos permitidos por default
         self.trading_engine = None
         self.demo_monitor = get_demo_monitor()
         self.is_running = False
@@ -51,8 +51,8 @@ class DemoRunner:
         # Configurações otimizadas para demo
         settings.position_size_usd = 10.0  # Posições pequenas para demo
         settings.max_positions = 5  # Máximo 5 posições
-        settings.min_confidence = 0.6  # Confiança mínima
-        settings.scan_interval_seconds = 120  # Scan a cada 2 minutos para reduzir rate limiting
+        settings.min_confidence = 0.4  # Confiança mínima mais baixa para gerar mais sinais
+        settings.scan_interval_seconds = 30  # Scan a cada 30 segundos para gerar mais oportunidades
         
         # Símbolos limitados para demo
         settings.allowed_symbols = self.symbols

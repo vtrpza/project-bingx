@@ -34,8 +34,23 @@ class BingXExchangeManager:
                 'defaultType': 'swap',  # Garante que as operações são para Futuros
                 'recvWindow': 10000    # Aumenta a janela de tempo para mitigar erros de timestamp
             },
-            'sandbox': settings.trading_mode == "demo"
+            'urls': {
+                'api': {
+                    'spot': settings.bingx_base_url + '/openApi',
+                    'swap': settings.bingx_base_url + '/openApi',
+                    'contract': settings.bingx_base_url + '/openApi',
+                    'wallets': settings.bingx_base_url + '/openApi',
+                    'user': settings.bingx_base_url + '/openApi',
+                    'subAccount': settings.bingx_base_url + '/openApi',
+                    'account': settings.bingx_base_url + '/openApi',
+                    'copyTrading': settings.bingx_base_url + '/openApi',
+                }
+            }
         })
+
+        if settings.trading_mode == "demo":
+            self.exchange.set_sandbox_mode(True)
+        logger.info("ccxt_exchange_initialized", exchange_urls=self.exchange.urls)
         
         # Rate limiter baseado na documentação: ≤ 10 req/s (100 / 10 s)
         self.rate_limiter = AsyncRateLimiter(
@@ -77,6 +92,7 @@ class BingXExchangeManager:
         async with self.rate_limiter:
             # Usando o método correto `fetch_balance`
             balance = await self.exchange.fetch_balance(params={'accountType': 'swap'})
+            logger.info("fetched_account_balance", full_balance=balance, currency=currency)
             return balance.get(currency, {}).get('free', 0.0)
 
     @backoff.on_exception(backoff.expo, RateLimitExceeded, max_tries=5, max_time=60)
@@ -99,25 +115,35 @@ class BingXExchangeManager:
         else:
             price_param = order.price
 
-        placed_order = await self.exchange.create_order(
-            symbol=order.symbol,
-            type=order.order_type.value,
-            side=order.side.value,
-            amount=order.quantity,
-            price=price_param,
-            params=params
-        )
-        return OrderResult(
-            order_id=placed_order.get('id'),
-            symbol=placed_order.get('symbol'),
-            side=OrderSide(placed_order.get('side').upper()),
-            status=placed_order.get('status').lower(),
-            executed_qty=float(placed_order.get('filled', 0.0)),
-            price=float(placed_order['price']) if placed_order.get('price') is not None else None,
-            avg_price=float(placed_order['average']) if placed_order.get('average') is not None else None,
-            commission=float(placed_order.get('fee', {}).get('cost')) if placed_order.get('fee', {}).get('cost') is not None else None,
-            timestamp=datetime.fromtimestamp(placed_order.get('timestamp', datetime.now().timestamp() * 1000) / 1000)
-        )
+        try:
+            placed_order = await self.exchange.create_order(
+                symbol=order.symbol,
+                type=order.order_type.value,
+                side=order.side.value,
+                amount=order.quantity,
+                price=price_param,
+                params=params
+            )
+            logger.info("order_placement_raw_response", response=placed_order)
+
+            if not placed_order:
+                logger.error("order_placement_empty_response", order=order.dict())
+                return None
+
+            return OrderResult(
+                order_id=placed_order.get('id'),
+                symbol=placed_order.get('symbol'),
+                side=OrderSide(placed_order.get('side').upper()),
+                status=placed_order.get('status').lower(),
+                executed_qty=float(placed_order.get('filled', 0.0)),
+                price=float(placed_order['price']) if placed_order.get('price') is not None else None,
+                avg_price=float(placed_order['average']) if placed_order.get('average') is not None else None,
+                commission=float(placed_order.get('fee', {}).get('cost')) if placed_order.get('fee', {}).get('cost') is not None else None,
+                timestamp=datetime.fromtimestamp(placed_order.get('timestamp', datetime.now().timestamp() * 1000) / 1000)
+            )
+        except Exception as e:
+            logger.log_error(e, context=f"Error placing order for {order.symbol}")
+            return None
 
     @backoff.on_exception(backoff.expo, RateLimitExceeded, max_tries=5, max_time=60)
     async def get_positions(self) -> List[Position]:
@@ -193,41 +219,56 @@ class BingXExchangeManager:
             "rate_limit_usage": "0%",
         }
 
-    @backoff.on_exception(backoff.expo, RateLimitExceeded, max_tries=5, max_time=60)
-    @cache(expire=3600) # Cache por 1 hora, símbolos não mudam com frequência
     async def get_symbol_info(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Obtém informações detalhadas de um símbolo, incluindo precisão e limites."""
-        async with self.rate_limiter:
-            await self.exchange.load_markets()  # Garante que os mercados estão carregados
-        market = self.exchange.market(symbol)
-        if market:
-            limits = market.get('limits', {})
-            amount_limits = limits.get('amount', {})
-            cost_limits = limits.get('cost', {})
-            
-            return {
-                "symbol": market.get('symbol'),
-                "status": "TRADING" if market.get('active') else "BREAK",
-                "quantityPrecision": market.get('precision', {}).get('amount', 3),
-                "pricePrecision": market.get('precision', {}).get('price', 2),
-                "minAmount": amount_limits.get('min', 0.001),  # Quantidade mínima
-                "maxAmount": amount_limits.get('max'),
-                "minCost": cost_limits.get('min', 1.0),  # Valor mínimo em USDT
-                "maxCost": cost_limits.get('max'),
-                "stepSize": amount_limits.get('step'),  # Incremento permitido
-            }
-        return None
+        logger.info("get_symbol_info_very_early_log", symbol=symbol)
+        try:
+            async with self.rate_limiter:
+                await self.exchange.load_markets()  # Garante que os mercados estão carregados
+            logger.debug("markets_loaded", symbol=symbol, markets_count=len(self.exchange.markets))
+            if symbol in self.exchange.markets:
+                logger.debug("symbol_found_in_markets_dict", symbol=symbol)
+            else:
+                logger.warning("symbol_not_found_in_markets_dict", symbol=symbol, available_markets=list(self.exchange.markets.keys())[:10]) # Log first 10 for brevity
+
+            market = self.exchange.market(symbol)
+            if market:
+                logger.debug("market_found", symbol=symbol, market_data=market)
+                limits = market.get('limits', {})
+                amount_limits = limits.get('amount', {})
+                cost_limits = limits.get('cost', {})
+                
+                return {
+                    "symbol": market.get('symbol'),
+                    "status": "TRADING" if market.get('active') else "BREAK",
+                    "quantityPrecision": market.get('precision', {}).get('amount', 3),
+                    "pricePrecision": market.get('precision', {}).get('price', 2),
+                    "minAmount": amount_limits.get('min', 0.001),  # Quantidade mínima
+                    "maxAmount": amount_limits.get('max'),
+                    "minCost": cost_limits.get('min', 1.0),  # Valor mínimo em USDT
+                    "maxCost": cost_limits.get('max'),
+                    "stepSize": amount_limits.get('step'),  # Incremento permitido
+                }
+            else:
+                logger.warning("market_not_found_in_exchange", symbol=symbol)
+                return None
+        except Exception as e:
+            logger.log_error(e, context=f"Error getting symbol info for {symbol}")
+            return None
 
     @backoff.on_exception(backoff.expo, RateLimitExceeded, max_tries=5, max_time=60)
     @cache(expire=3600) # Cache por 1 hora, símbolos não mudam com frequência
     async def get_futures_symbols(self) -> List[str]:
         """Obtém todos os símbolos de futuros disponíveis na BingX."""
+        logger.debug("fetching_futures_symbols_start")
         async with self.rate_limiter:
             await self.exchange.load_markets()
+        logger.info("markets_loaded_in_get_futures_symbols", markets_count=len(self.exchange.markets), sample_markets=list(self.exchange.markets.keys())[:10])
         futures_symbols = []
-        for symbol, market in self.exchange.markets.items():
+        for symbol_id, market in self.exchange.markets.items():
             if market.get('type') == 'swap' and market.get('active'):
-                futures_symbols.append(symbol)
+                futures_symbols.append(market['symbol'])
+        logger.info("fetched_futures_symbols", count=len(futures_symbols), symbols=futures_symbols[:10]) # Log first 10
         return futures_symbols
 
     @backoff.on_exception(backoff.expo, RateLimitExceeded, max_tries=5, max_time=60)

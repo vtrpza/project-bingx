@@ -11,18 +11,16 @@ from datetime import datetime, timedelta
 
 from data.models import AnalyticsResponse, TradePerformance, PortfolioMetrics, SystemHealth
 from utils.logger import get_logger
+from core.trading_engine import TradingEngine
+from api.dependencies import get_trading_engine
 
 logger = get_logger("analytics_routes")
 router = APIRouter()
 
-# Global reference para o trading engine
-trading_engine = None
 
-def get_trading_engine():
-    """Dependency para obter trading engine"""
-    if not trading_engine:
-        raise HTTPException(status_code=503, detail="Trading engine not implemented yet")
-    return trading_engine
+@router.get("/scan/data", summary="Obtém dados da última varredura")
+async def get_scan_data(engine: TradingEngine = Depends(get_trading_engine)):
+    return engine.scan_data
 
 
 @router.get("/overview", response_model=AnalyticsResponse)

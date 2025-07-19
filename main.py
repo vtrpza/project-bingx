@@ -50,36 +50,85 @@ class DemoLogHandler(logging.Handler):
         super().__init__(level)
         self.records = []
         self.max_records = 500  # Limite de logs para evitar sobrecarga
+        self._latest_technical_data = {} # New: Store latest technical analysis data
 
     def emit(self, record):
-        try:
-            # Tentar parsear como JSON estruturado
-            log_entry = json.loads(self.format(record))
-            
-            # Adicionar campos extras para melhor rastreabilidade
+        log_entry = {}
+        if isinstance(record.msg, dict):
+            # If structlog passed a dictionary directly
+            log_entry = record.msg
+            log_entry["timestamp"] = datetime.fromtimestamp(record.created).isoformat() + "Z"
+            log_entry["level"] = record.levelname.lower()
+            # Add extra fields for traceability
             log_entry.update({
                 "logger_name": record.name,
-                "module": record.module if hasattr(record, 'module') else 'unknown',
-                "funcName": record.funcName if hasattr(record, 'funcName') else 'unknown',
-                "lineno": record.lineno if hasattr(record, 'lineno') else 0
+                "module": record.module,
+                "funcName": record.funcName,
+                "lineno": record.lineno
             })
-            
-            self.records.append(log_entry)
-            
-        except json.JSONDecodeError:
-            # Fallback para logs não-JSON
-            log_entry = {
-                "timestamp": datetime.now().isoformat(),
-                "level": record.levelname.lower(),
-                "event": self.format(record),
-                "logger_name": record.name,
-                "module": record.module if hasattr(record, 'module') else 'unknown',
-                "funcName": record.funcName if hasattr(record, 'funcName') else 'unknown',
-                "lineno": record.lineno if hasattr(record, 'lineno') else 0,
-                "message": record.getMessage()
-            }
-            self.records.append(log_entry)
-        
+        else:
+            # Fallback for non-structured logs or if structlog formatted to string
+            try:
+                # Try to parse as JSON string
+                parsed_msg = json.loads(record.message)
+                if isinstance(parsed_msg, dict):
+                    log_entry = parsed_msg
+                    log_entry["timestamp"] = datetime.fromtimestamp(record.created).isoformat() + "Z"
+                    log_entry["level"] = record.levelname.lower()
+                    log_entry.update({
+                        "logger_name": record.name,
+                        "module": record.module,
+                        "funcName": record.funcName,
+                        "lineno": record.lineno
+                    })
+                else:
+                    raise ValueError("Not a dictionary after JSON parse")
+            except (json.JSONDecodeError, ValueError):
+                # Fallback for plain string logs
+                log_entry = {
+                    "timestamp": datetime.fromtimestamp(record.created).isoformat() + "Z",
+                    "level": record.levelname.lower(),
+                    "event": record.message, # Use record.message for plain string
+                    "logger_name": record.name,
+                    "module": record.module,
+                    "funcName": record.funcName,
+                    "lineno": record.lineno,
+                    "message": record.getMessage() # Keep original message
+                }
+
+        self.records.append(log_entry)
+
+        # Update _latest_technical_data if the log entry contains relevant info
+        event = log_entry.get('event', '')
+        symbol = log_entry.get('symbol')
+
+        if symbol and any(keyword in event.lower() for keyword in ['rsi', 'sma', 'analyze', 'indicator']):
+            if symbol not in self._latest_technical_data:
+                self._latest_technical_data[symbol] = {
+                    'rsi': None,
+                    'sma': None,
+                    'price': None,
+                    'distance_percent': None,
+                    'last_analysis': None,
+                    'trend': None
+                }
+
+            current_symbol_data = self._latest_technical_data[symbol]
+
+            # Update fields if present in the current log_entry
+            if log_entry.get('rsi') is not None:
+                current_symbol_data['rsi'] = log_entry['rsi']
+            if log_entry.get('sma') is not None:
+                current_symbol_data['sma'] = log_entry['sma']
+            if log_entry.get('price') is not None:
+                current_symbol_data['price'] = log_entry['price']
+            if log_entry.get('distance_to_pivot') is not None:
+                current_symbol_data['distance_percent'] = log_entry['distance_to_pivot']
+            if log_entry.get('slope') is not None:
+                slope = log_entry['slope']
+                current_symbol_data['trend'] = 'UP' if slope > 0 else 'DOWN' if slope < 0 else 'FLAT'
+            current_symbol_data['last_analysis'] = log_entry['timestamp']
+
         # Manter apenas os últimos N logs
         if len(self.records) > self.max_records:
             self.records = self.records[-self.max_records:]
@@ -113,44 +162,7 @@ class DemoLogHandler(logging.Handler):
 
     def get_technical_analysis_data(self):
         """Extrai dados de análise técnica em tempo real"""
-        technical_data = {}
-        for log in self.records[-20:]:  # Últimos 20 logs
-            event = log.get('event', '')
-            symbol = log.get('symbol')
-            
-            if symbol and any(keyword in event.lower() for keyword in ['rsi', 'sma', 'analyze', 'indicator']):
-                if symbol not in technical_data:
-                    technical_data[symbol] = {
-                        'rsi': None,
-                        'sma': None,
-                        'price': None,
-                        'distance_percent': None,
-                        'last_analysis': log.get('timestamp'),
-                        'trend': None
-                    }
-                
-                # Extrair RSI
-                if 'rsi' in event.lower():
-                    technical_data[symbol]['rsi'] = log.get('rsi')
-                
-                # Extrair SMA
-                if 'sma' in event.lower():
-                    technical_data[symbol]['sma'] = log.get('sma')
-                
-                # Extrair preço atual
-                if log.get('price'):
-                    technical_data[symbol]['price'] = log.get('price')
-                
-                # Calcular distância percentual
-                if log.get('distance_to_pivot'):
-                    technical_data[symbol]['distance_percent'] = log.get('distance_to_pivot')
-                
-                # Extrair direção da tendência
-                if log.get('slope'):
-                    slope = log.get('slope', 0)
-                    technical_data[symbol]['trend'] = 'UP' if slope > 0 else 'DOWN' if slope < 0 else 'FLAT'
-                
-        return technical_data
+        return self._latest_technical_data
 
     def get_trading_signals_data(self):
         """Extrai dados de sinais de trading"""
@@ -282,6 +294,39 @@ class DemoLogHandler(logging.Handler):
                     del positions[symbol]
                     
         return list(positions.values())
+
+    def get_rejected_signals_data(self):
+        """Extrai dados de sinais de trading rejeitados"""
+        rejected_signals = []
+        for log in self.records[-50:]:  # Últimos 50 logs para análise
+            event = log.get('event', '')
+            # Assuming a log message indicates rejection, e.g., "Signal rejected" or "Signal not executed"
+            if "signal rejected" in event.lower() or "signal not executed" in event.lower():
+                rejected_signals.append({
+                    'timestamp': log.get('timestamp'),
+                    'symbol': log.get('symbol'),
+                    'signal_type': log.get('signal_type'),
+                    'reason': event, # The full event message as reason for rejection
+                    'level': log.get('level')
+                })
+        return rejected_signals
+
+    def get_scan_summaries(self):
+        """Extrai resumos de scans de mercado"""
+        scan_summaries = []
+        for log in self.records:
+            event = log.get('event', '')
+            if event == 'parallel_scan_completed':
+                scan_summaries.append({
+                    'timestamp': log.get('timestamp'),
+                    'symbols_scanned': log.get('symbols_scanned'),
+                    'signals_found': log.get('signals_found'),
+                    'signals_executed': log.get('signals_executed'),
+                    'scan_duration': log.get('scan_duration'),
+                    'scan_id': log.get('scan_id'),
+                    'level': log.get('level')
+                })
+        return scan_summaries[-20:] # Return last 20 scan summaries
 
 demo_log_handler = DemoLogHandler()
 
@@ -478,6 +523,8 @@ class DemoManager:
         self.is_running = False
         self.last_report = {}
         self.log_handler = demo_log_handler # Use the global handler
+        self.last_duration = 60 # Default duration
+        self.last_symbols = None # Default symbols
         
         # Configurar logging para capturar de múltiplos loggers
         loggers_to_capture = [
@@ -520,6 +567,45 @@ class DemoManager:
             self.demo_task = None
             logger.info("Demo task finished.")
 
+    async def pause_demo(self):
+        if self.is_running and self.demo_task:
+            self.demo_task.cancel()
+            self.is_running = False
+            logger.info("Demo paused.")
+            return {"status": "success", "message": "Demo paused."}
+        return {"status": "error", "message": "Demo is not running or already paused."}
+
+    async def resume_demo(self):
+        if not self.is_running and self.demo_task and not self.demo_task.done():
+            # Re-create task if it was cancelled, or just set is_running if it was merely paused
+            # For simplicity, we'll just allow starting a new one if it was cancelled.
+            # A more robust solution might involve re-scheduling the original coroutine.
+            # For now, if it's not running and task is done, it means it finished or was cancelled.
+            # We'll treat resume as a new start if the task is done.
+            logger.info("Attempting to resume demo. If task was cancelled, it will restart.")
+            # If the task is done, it means it completed or was cancelled. We need to restart it.
+            # For now, we'll just allow starting a new one if it was cancelled.
+            # A more robust solution might involve re-scheduling the original coroutine.
+            # For now, if it's not running and task is done, it means it finished or was cancelled.
+            # We'll treat resume as a new start if the task is done.
+            return await self.start_demo(duration=self.last_duration, symbols=self.last_symbols)
+        elif not self.is_running and self.demo_task and not self.demo_task.done():
+            # If it was paused (task not done, but is_running is false), just set is_running to true
+            self.is_running = True
+            logger.info("Demo resumed.")
+            return {"status": "success", "message": "Demo resumed."}
+        return {"status": "error", "message": "Demo is already running or cannot be resumed."}
+
+    async def reset_demo(self):
+        if self.is_running and self.demo_task:
+            self.demo_task.cancel()
+            await asyncio.sleep(0.1) # Give a moment for cancellation
+        self.is_running = False
+        self.demo_task = None
+        self.log_handler.clear_logs()
+        logger.info("Demo reset.")
+        return {"status": "success", "message": "Demo reset."}
+
     def get_status(self):
         return {
             "is_running": self.is_running,
@@ -531,6 +617,7 @@ class DemoManager:
             "real_time_metrics": self.log_handler.get_real_time_metrics(),
             "portfolio_summary": self.log_handler.get_portfolio_summary(),
             "open_positions": self.log_handler.get_open_positions(),
+            "scan_summaries": self.log_handler.get_scan_summaries(),
             "last_report": self.last_report,
             "total_logs": len(self.log_handler.get_logs())
         }
@@ -687,6 +774,24 @@ async def get_real_time_metrics():
 
 
 
+@app.post("/demo/pause")
+async def pause_demo():
+    if not demo_manager:
+        return {"status": "error", "message": "Demo manager not initialized."}
+    return await demo_manager.pause_demo()
+
+@app.post("/demo/resume")
+async def resume_demo():
+    if not demo_manager:
+        return {"status": "error", "message": "Demo manager not initialized."}
+    return await demo_manager.resume_demo()
+
+@app.post("/demo/reset")
+async def reset_demo():
+    if not demo_manager:
+        return {"status": "error", "message": "Demo manager not initialized."}
+    return await demo_manager.reset_demo()
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint for deployment"""
@@ -812,13 +917,16 @@ async def demo_dashboard():
                 <h2>🎮 Controle da Demonstração</h2>
                 <div class="control-row">
                     <label>Duração (segundos): <input type="number" id="duration" value="60"></label>
-                    <label>Símbolos: <input type="text" id="symbols" value="BTC-USDT,ETH-USDT"></label>
-                    <button onclick="startDemo()">Iniciar Demo</button>
+                    
+                    <button id="start-demo-button">Iniciar Demo</button>
+                    <button id="pause-demo-button">Pausar Demo</button>
+                    <button id="resume-demo-button">Continuar Demo</button>
+                    <button id="reset-demo-button">Resetar Demo</button>
                 </div>
                 <div id="start-message" style="color: #FFC107; margin-top: 10px;"></div>
                 <div class="status-row">
                     <span>Status: <span id="demo-status" class="status-stopped">Parado</span></span>
-                    <button onclick="getDemoStatus()">🔄 Atualizar Dados</button>
+                    <button id="refresh-data-button">🔄 Atualizar Dados</button>
                 </div>
             </div>
 
@@ -903,6 +1011,14 @@ async def demo_dashboard():
                             <div class="empty-state">Nenhuma ordem executada.</div>
                         </div>
                     </div>
+
+                    <!-- Seção de Resumo dos Scans -->
+                    <div class="section">
+                        <h2>🔍 Resumo dos Scans</h2>
+                        <div id="scan-summaries">
+                            <div class="empty-state">Nenhum resumo de scan disponível.</div>
+                        </div>
+                    </div>
                 </div>
             </div>
             
@@ -924,19 +1040,54 @@ async def demo_dashboard():
             
             async function startDemo() {
                 const duration = document.getElementById('duration').value;
-                const symbolsInput = document.getElementById('symbols').value;
-                const symbols = symbolsInput ? symbolsInput.split(',').map(s => s.trim()) : [];
+                // Store duration and symbols for potential resume
+                window.lastDemoDuration = parseInt(duration);
+                window.lastDemoSymbols = null; // Symbols are now fixed
 
                 const response = await fetch('/demo/start', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ duration: parseInt(duration), symbols: symbols })
+                    body: JSON.stringify({ duration: parseInt(duration), symbols: null }) // Pass null for symbols
                 });
                 const data = await response.json();
                 document.getElementById('start-message').textContent = JSON.stringify(data, null, 2);
                 getDemoStatus(); // Atualizar status após iniciar
+            }
+
+            async function pauseDemo() {
+                const response = await fetch('/demo/pause', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                document.getElementById('start-message').textContent = JSON.stringify(data, null, 2);
+                getDemoStatus();
+            }
+
+            async function resumeDemo() {
+                const duration = window.lastDemoDuration || 60; // Use last duration or default
+                const symbols = window.lastDemoSymbols || null; // Use last symbols or default
+
+                const response = await fetch('/demo/resume', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ duration: duration, symbols: symbols })
+                });
+                const data = await response.json();
+                document.getElementById('start-message').textContent = JSON.stringify(data, null, 2);
+                getDemoStatus();
+            }
+
+            async function resetDemo() {
+                const response = await fetch('/demo/reset', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                document.getElementById('start-message').textContent = JSON.stringify(data, null, 2);
+                getDemoStatus();
             }
 
             async function getDemoStatus() {
@@ -970,6 +1121,9 @@ async def demo_dashboard():
                 
                 // Atualizar execução de ordens
                 updateOrderExecution(data.order_execution);
+
+                // Atualizar resumo dos scans
+                updateScanSummaries(data.scan_summaries);
                 
                 // Armazenar logs para filtragem
                 allLogs = data.logs || [];
@@ -1061,31 +1215,11 @@ async def demo_dashboard():
                             </div>
                             <div class="indicator">
                                 <span class="indicator-label">Preço:</span>
-                                <span class="indicator-value">${data.price ? '
-
-
-if __name__ == "__main__":
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=False,
-        log_level="info"
-    ) + data.price.toFixed(2) : 'N/A'}</span>
+                                <span class="indicator-value">${data.price ? data.price.toFixed(2) : 'N/A'}</span>
                             </div>
                             <div class="indicator">
                                 <span class="indicator-label">SMA:</span>
-                                <span class="indicator-value">${data.sma ? '
-
-
-if __name__ == "__main__":
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=False,
-        log_level="info"
-    ) + data.sma.toFixed(2) : 'N/A'}</span>
+                                <span class="indicator-value">${data.sma ? data.sma.toFixed(2) : 'N/A'}</span>
                             </div>
                             <div class="indicator">
                                 <span class="indicator-label">Distância:</span>
@@ -1174,6 +1308,40 @@ if __name__ == "__main__":
                 });
             }
             
+            function updateScanSummaries(summaries) {
+                const container = document.getElementById('scan-summaries');
+                container.innerHTML = '';
+
+                if (!summaries || summaries.length === 0) {
+                    container.innerHTML = '<div class="empty-state">Nenhum resumo de scan disponível.</div>';
+                    return;
+                }
+
+                summaries.forEach(summary => {
+                    const summaryDiv = document.createElement('div');
+                    summaryDiv.className = 'signal-item'; // Reusing signal-item class for styling
+
+                    summaryDiv.innerHTML = `
+                        <div class="signal-header">
+                            <div>
+                                <span class="signal-type primary">SCAN</span>
+                                <strong>${summary.scan_id || 'N/A'}</strong>
+                            </div>
+                            <div class="signal-confidence">Duração: ${summary.scan_duration?.toFixed(4) || 'N/A'}s</div>
+                        </div>
+                        <div class="signal-details">
+                            <strong>Símbolos Escaneados:</strong> ${summary.symbols_scanned || 0} | 
+                            <strong>Sinais Encontrados:</strong> ${summary.signals_found || 0} | 
+                            <strong>Sinais Executados:</strong> ${summary.signals_executed || 0}
+                        </div>
+                        <div class="signal-details">
+                            ${new Date(summary.timestamp).toLocaleTimeString()}
+                        </div>
+                    `;
+                    container.appendChild(summaryDiv);
+                });
+            }
+
             function updateLogsDisplay() {
                 const logsElement = document.getElementById('demo-logs');
                 logsElement.innerHTML = '';
@@ -1233,6 +1401,14 @@ if __name__ == "__main__":
             getDemoStatus();
             // Atualizar status a cada 3 segundos
             setInterval(getDemoStatus, 3000);
+
+            // Adicionar event listeners aos botões após o DOM carregar
+            document.addEventListener('DOMContentLoaded', (event) => {
+                document.getElementById('start-demo-button').addEventListener('click', startDemo);
+                document.getElementById('pause-demo-button').addEventListener('click', pauseDemo);
+                document.getElementById('resume-demo-button').addEventListener('click', resumeDemo);
+                document.getElementById('reset-demo-button').addEventListener('click', resetDemo);
+            });
         </script>
     </body>
     </html>

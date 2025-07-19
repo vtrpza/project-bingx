@@ -115,12 +115,14 @@ class DemoMonitor:
             
         elif event.step == FlowStep.ANALYZING:
             confidence = event.data.get('confidence', 0)
-            logger.info(f"{status} ANÁLISE {event.symbol} - Confiança: {confidence:.2f} {duration}")
+            logger.debug(f"{status} ANÁLISE {event.symbol} - Confiança: {confidence:.2f} {duration}")
             
         elif event.step == FlowStep.SIGNAL_GENERATED:
             signal_type = event.data.get('signal_type', 'N/A')
             confidence = event.data.get('confidence', 0)
-            logger.info(f"{status} SINAL {event.symbol} - {signal_type} - Confiança: {confidence:.2f}")
+            entry_price = event.data.get('entry_price', 'N/A')
+            entry_type = event.data.get('entry_type', 'N/A')
+            logger.info(f"{status} SINAL {event.symbol} | Tipo: {signal_type} ({entry_type}) | Confiança: {confidence:.2f} | Preço: {entry_price}")
             
         elif event.step == FlowStep.RISK_VALIDATION:
             allowed = event.data.get('allowed', False)
@@ -130,7 +132,10 @@ class DemoMonitor:
         elif event.step == FlowStep.ORDER_EXECUTION:
             if event.success:
                 order_id = event.data.get('order_id', 'N/A')
-                logger.info(f"{status} ORDEM {event.symbol} - ID: {order_id} {duration}")
+                price = event.data.get('price', 'N/A')
+                quantity = event.data.get('quantity', 'N/A')
+                side = event.data.get('side', 'N/A')
+                logger.info(f"{status} ORDEM {event.symbol} - ID: {order_id} | Lado: {side} | Preço: {price} | Quantidade: {quantity} {duration}")
             else:
                 logger.error(f"{status} ORDEM {event.symbol} - Erro: {event.error}")
                 
@@ -325,13 +330,21 @@ def log_risk_event(symbol: str, allowed: bool, reason: str):
     )
 
 def log_execution_event(symbol: str, success: bool, order_id: Optional[str] = None, 
-                       error: Optional[str] = None, duration_ms: Optional[int] = None):
+                       error: Optional[str] = None, duration_ms: Optional[int] = None, 
+                       price: Optional[float] = None, quantity: Optional[float] = None, 
+                       side: Optional[str] = None):
     """Log evento de execução"""
     data = {}
     if order_id:
         data["order_id"] = order_id
     if error:
         data["error"] = error
+    if price:
+        data["price"] = price
+    if quantity:
+        data["quantity"] = quantity
+    if side:
+        data["side"] = side
         
     demo_monitor.log_event(
         FlowStep.ORDER_EXECUTION,

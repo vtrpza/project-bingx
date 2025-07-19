@@ -107,7 +107,8 @@ class TimeframeManager:
                 df_5m = klines_5m
             
             # Construir candles de 2h (24 blocos de 5min)
-            return self.build_custom_candles(df_5m, 24, 13)
+            min_required_data_points = max(settings.rsi_period + 1, settings.sma_period)
+            return self.build_custom_candles(df_5m, 24, min_required_data_points)
             
         except Exception as e:
             logger.log_error(e, context="Building 2h timeframe")
@@ -138,7 +139,8 @@ class TimeframeManager:
                 df_5m = klines_5m
             
             # Construir candles de 4h (48 blocos de 5min)
-            return self.build_custom_candles(df_5m, 48, 13)
+            min_required_data_points = max(settings.rsi_period + 1, settings.sma_period)
+            return self.build_custom_candles(df_5m, 48, min_required_data_points)
             
         except Exception as e:
             logger.log_error(e, context="Building 4h timeframe")

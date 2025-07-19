@@ -11,28 +11,57 @@ import time
 import structlog
 from typing import Any, Dict
 from pathlib import Path
-
+import logging
 
 def setup_logging(log_level: str = "INFO"):
-    """Configura sistema de logging estruturado"""
-    
-    # Configurar processadores do structlog
-    processors = [
-        structlog.stdlib.filter_by_level,
+    # Configure structlog processors
+    # These processors will be applied to the event dictionary
+    shared_processors = [
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
         structlog.contextvars.merge_contextvars,
         structlog.processors.TimeStamper(fmt="ISO"),
-        structlog.processors.JSONRenderer()  # JSON para sistemas de log
+        structlog.processors.StackInfoRenderer(), # For stack info in logs
+        structlog.processors.format_exc_info, # For exception info in logs
     ]
-    
-    # Configurar structlog
+
+    # Configure structlog
     structlog.configure(
-        processors=processors,
+        processors=shared_processors + [structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
         wrapper_class=structlog.stdlib.BoundLogger,
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
+
+    # Add a standard library handler that uses ProcessorFormatter
+    # This will ensure that logs are formatted for console output
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = structlog.stdlib.ProcessorFormatter(
+        processor=structlog.dev.ConsoleRenderer(), # Or KeyValueRenderer for less colorful output
+        foreign_pre_chain=shared_processors,
+    )
+    handler.setFormatter(formatter)
+    
+    # Get the root logger and add the handler
+    # This ensures that all logs go through this formatter for console output
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(log_level.upper()) # Ensure root logger level is set
+
+    # Add a standard library handler that uses ProcessorFormatter
+    # This will ensure that logs are formatted for console output
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = structlog.stdlib.ProcessorFormatter(
+        processor=structlog.dev.ConsoleRenderer(), # Or KeyValueRenderer for less colorful output
+        foreign_pre_chain=shared_processors,
+    )
+    handler.setFormatter(formatter)
+    
+    # Get the root logger and add the handler
+    # This ensures that all logs go through this formatter for console output
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(log_level.upper()) # Ensure root logger level is set
 
 
 class TradingLogger:

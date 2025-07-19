@@ -21,9 +21,9 @@ class TradingMode(str, Enum):
 
 class RiskProfile(str, Enum):
     """Perfis de risco predefinidos"""
-    CONSERVATIVE = "conservative"
-    MODERATE = "moderate"
-    AGGRESSIVE = "aggressive"
+    SEGURO = "seguro"
+    NORMAL = "normal"
+    AGRESSIVO = "agressivo"
 
 
 class Settings(BaseSettings):
@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     
     # Perfil de risco
     risk_profile: RiskProfile = Field(
-        default=RiskProfile.MODERATE,
+        default=RiskProfile.NORMAL,
         description="Perfil de risco para parâmetros automáticos"
     )
     
@@ -308,8 +308,8 @@ class Settings(BaseSettings):
     # Símbolos Permitidos
     allowed_symbols: list = Field(
         default=[
-            "BTC-USDT", "ETH-USDT", "BNB-USDT", "ADA-USDT", "DOT-USDT", 
-            "LINK-USDT", "SOL-USDT", "AVAX-USDT", "MATIC-USDT", "ATOM-USDT"
+            "ORBS/USDT", "ZKJ/USDT", "RBTC/USDT", "DOME/USDT", "LABS/USDT", 
+            "FLR/USDT", "RZR/USDT", "EVDC/USDT", "NOT/USDT", "SPYX/USDT"
         ],
         description="Lista de símbolos permitidos para trading"
     )
@@ -331,7 +331,7 @@ class Settings(BaseSettings):
     
     # URLs
     bingx_base_url: str = Field(
-        default="https://open-api.bingx.com",
+        default="https://open-api-vst.bingx.com",
         description="BingX API base URL"
     )
     
@@ -351,7 +351,7 @@ class Settings(BaseSettings):
     
     # Logging
     log_level: str = Field(
-        default="INFO",
+        default="DEBUG",
         description="Nível de logging"
     )
     
@@ -401,14 +401,14 @@ class Settings(BaseSettings):
     
     def apply_risk_profile(self):
         """Aplica parâmetros baseados no perfil de risco"""
-        if self.risk_profile == RiskProfile.CONSERVATIVE:
+        if self.risk_profile == RiskProfile.SEGURO:
             self.position_size_usd = min(self.position_size_usd, 15.0)
             self.max_positions = min(self.max_positions, 5)
             self.min_confidence = max(self.min_confidence, 0.7)
             self.stop_loss_pct = max(self.stop_loss_pct, 0.015)
             self.max_portfolio_risk = min(self.max_portfolio_risk, 0.15)
             
-        elif self.risk_profile == RiskProfile.AGGRESSIVE:
+        elif self.risk_profile == RiskProfile.AGRESSIVO:
             self.max_positions = min(self.max_positions * 2, 20)
             self.min_confidence = min(self.min_confidence, 0.4)
             self.stop_loss_pct = min(self.stop_loss_pct, 0.025)
@@ -465,29 +465,37 @@ def update_settings(new_settings: Dict[str, Any]) -> Settings:
 
 # Configurações específicas por perfil de risco
 RISK_PROFILES = {
-    RiskProfile.CONSERVATIVE: {
+    RiskProfile.SEGURO: {
         "position_size_usd": 5.0,
         "max_positions": 3,
         "min_confidence": 0.8,
-        "stop_loss_pct": 0.015,
+        "min_signal_confidence": 0.8,
+        "stop_loss_pct": 0.01,
+        "take_profit_pct": 0.03,
         "max_portfolio_risk": 0.1,
-        "scan_interval_seconds": 300,  # Increased from 120 to 300 (5 minutes)
+        "scan_interval_seconds": 300,
     },
-    RiskProfile.MODERATE: {
+    RiskProfile.NORMAL: {
         "position_size_usd": 10.0,
         "max_positions": 8,
         "min_confidence": 0.6,
+        "min_signal_confidence": 0.6,
         "stop_loss_pct": 0.02,
+        "take_profit_pct": 0.06,
         "max_portfolio_risk": 0.2,
-        "scan_interval_seconds": 240,  # Increased from 90 to 240 (4 minutes)
+        "scan_interval_seconds": 240,
     },
-    RiskProfile.AGGRESSIVE: {
+    RiskProfile.AGRESSIVO: {
         "position_size_usd": 25.0,
         "max_positions": 15,
-        "min_confidence": 0.4,
-        "stop_loss_pct": 0.025,
+        
+        "min_signal_confidence": 0.4,
+        "rsi_min": 30,
+        "rsi_max": 70,
+        "stop_loss_pct": 0.03,
+        "take_profit_pct": 0.09,
         "max_portfolio_risk": 0.35,
-        "scan_interval_seconds": 180,  # Increased from 60 to 180 (3 minutes)
+        "scan_interval_seconds": 180,
     }
 }
 
