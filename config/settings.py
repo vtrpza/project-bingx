@@ -84,15 +84,15 @@ class Settings(BaseSettings):
     )
     
     rsi_min: float = Field(
-        default=30,
+        default=35,
         ge=10,
-        le=40,
+        le=50,
         description="RSI mínimo para entrada"
     )
     
     rsi_max: float = Field(
-        default=80,
-        ge=60,
+        default=73,
+        ge=50,
         le=90,
         description="RSI máximo para entrada"
     )

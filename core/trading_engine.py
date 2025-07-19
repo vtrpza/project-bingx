@@ -598,7 +598,7 @@ class TradingEngine:
             signal = None
             
             # ETAPA 1: ENTRADA PRINCIPAL (Primary Entry) - usar timeframe 4h como principal
-            signal = self._try_primary_entry(df_4h, conditions_2h, conditions_4h, symbol)
+            signal = self._try_primary_entry(df_2h, df_4h, conditions_2h, conditions_4h, symbol)
             
             # ETAPA 2: REENTRADA (Reentry) - apenas se não houve sinal principal
             if not signal:
@@ -623,147 +623,150 @@ class TradingEngine:
             logger.log_error(e, context=f"Analyzing symbol {symbol}")
             return None
     
-    def _try_primary_entry(self, df_4h: pd.DataFrame, 
+    def _try_primary_entry(self, df_2h: pd.DataFrame, df_4h: pd.DataFrame,
                           conditions_2h: dict, conditions_4h: dict, symbol: str) -> Optional[TradingSignal]:
         """
-        ENTRADA PRINCIPAL: RSI + cruzamento SMA/pivot center (4h timeframe) com confiança dinâmica
+        ENTRADA NORMAL: RSI na faixa (35-73) e cruzamento da MM1 (SMA) com a 'center'
+        em 2h OU 4h.
         """
         try:
-            # Usar timeframe 4h como principal para decisão (conforme especificação)
-            # 2h como confirmação
-            
-            # ENTRADA PRINCIPAL LONG
-            if (conditions_4h["rsi_ok"] and 
-                conditions_4h["distance_ok"] and 
-                (conditions_4h["long_cross"] or conditions_4h["slope_ok"]) and
-                conditions_2h["rsi_ok"]):  # 2h como confirmação
+            # Verificar as condições em ambos os timeframes
+            for timeframe_df, conditions, timeframe_name in [(df_2h, conditions_2h, "2h"), (df_4h, conditions_4h, "4h")]:
                 
-                confidence = self._calculate_signal_confidence(
-                    conditions_2h, conditions_4h, "long"
-                )
-                
-                return TradingSignal(
-                    symbol=symbol,
-                    side="BUY",
-                    confidence=confidence,
-                    entry_type="primary",  # Marcar como entrada principal
-                    entry_price=float(df_4h.iloc[-1]["close"]),
-                    stop_loss=float(df_4h.iloc[-1]["close"]) - (float(df_4h.iloc[-1]["atr"]) * settings.atr_multiplier),
-                    take_profit=float(df_4h.iloc[-1]["close"]) + (float(df_4h.iloc[-1]["atr"]) * settings.atr_multiplier),
-                    signal_type=SignalType.LONG,
-                    price=float(df_4h.iloc[-1]["close"]),
-                    indicators=TechnicalIndicators(
-                        rsi=float(df_4h.iloc[-1]["rsi"]),
-                        sma=float(df_4h.iloc[-1]["sma"]),
-                        pivot_center=float(df_4h.iloc[-1]["center"]),
-                        distance_to_pivot=float(conditions_4h["distance_value"]),
-                        slope=float(conditions_4h["slope_value"])
-                    ),
-                    timestamp=datetime.now()
-                )
-            
-            # ENTRADA PRINCIPAL SHORT
-            elif (conditions_4h["rsi_ok"] and 
-                  conditions_4h["distance_ok"] and 
-                  (conditions_4h["short_cross"] or conditions_4h["slope_ok"]) and
-                  conditions_2h["rsi_ok"]):  # 2h como confirmação
-                
-                confidence = self._calculate_signal_confidence(
-                    conditions_2h, conditions_4h, "short"
-                )
-                
-                return TradingSignal(
-                    symbol=symbol,
-                    side="SELL",
-                    confidence=confidence,
-                    entry_type="primary",  # Marcar como entrada principal
-                    entry_price=float(df_4h.iloc[-1]["close"]),
-                    stop_loss=float(df_4h.iloc[-1]["close"]) + (float(df_4h.iloc[-1]["atr"]) * settings.atr_multiplier),
-                    take_profit=float(df_4h.iloc[-1]["close"]) - (float(df_4h.iloc[-1]["atr"]) * settings.atr_multiplier),
-                    signal_type=SignalType.SHORT,
-                    price=float(df_4h.iloc[-1]["close"]),
-                    indicators=TechnicalIndicators(
-                        rsi=float(df_4h.iloc[-1]["rsi"]),
-                        sma=float(df_4h.iloc[-1]["sma"]),
-                        pivot_center=float(df_4h.iloc[-1]["center"]),
-                        distance_to_pivot=float(conditions_4h["distance_value"]),
-                        slope=float(conditions_4h["slope_value"])
-                    ),
-                    timestamp=datetime.now()
-                )
-            
-            return None
-            
+                if not conditions["rsi_ok"]:
+                    continue # Pula para o próximo timeframe se o RSI não estiver na faixa
+
+                # CONDIÇÃO DE COMPRA: Cruzamento de baixo para cima
+                if conditions["long_cross"]:
+                    logger.info("primary_entry_signal_long", symbol=symbol, timeframe=timeframe_name)
+                    confidence = self._calculate_signal_confidence(conditions_2h, conditions_4h, "long")
+                    
+                    return TradingSignal(
+                        symbol=symbol,
+                        side="BUY",
+                        confidence=confidence,
+                        entry_type="primary",
+                        entry_price=float(timeframe_df.iloc[-1]["close"]),
+                        stop_loss=float(timeframe_df.iloc[-1]["close"]) * (1 - settings.stop_loss_pct),
+                        take_profit=float(timeframe_df.iloc[-1]["close"]) * (1 + settings.take_profit_pct),
+                        signal_type=SignalType.LONG,
+                        price=float(timeframe_df.iloc[-1]["close"]),
+                        indicators=TechnicalIndicators(
+                            rsi=float(conditions["rsi_value"]),
+                            sma=float(timeframe_df.iloc[-1]["sma"]),
+                            pivot_center=float(timeframe_df.iloc[-1]["center"]),
+                            distance_to_pivot=float(conditions["distance_value"]),
+                            slope=float(conditions["slope_value"])
+                        ),
+                        timestamp=datetime.now()
+                    )
+
+                # CONDIÇÃO DE VENDA: Cruzamento de cima para baixo
+                if conditions["short_cross"]:
+                    logger.info("primary_entry_signal_short", symbol=symbol, timeframe=timeframe_name)
+                    confidence = self._calculate_signal_confidence(conditions_2h, conditions_4h, "short")
+
+                    return TradingSignal(
+                        symbol=symbol,
+                        side="SELL",
+                        confidence=confidence,
+                        entry_type="primary",
+                        entry_price=float(timeframe_df.iloc[-1]["close"]),
+                        stop_loss=float(timeframe_df.iloc[-1]["close"]) * (1 + settings.stop_loss_pct),
+                        take_profit=float(timeframe_df.iloc[-1]["close"]) * (1 - settings.take_profit_pct),
+                        signal_type=SignalType.SHORT,
+                        price=float(timeframe_df.iloc[-1]["close"]),
+                        indicators=TechnicalIndicators(
+                            rsi=float(conditions["rsi_value"]),
+                            sma=float(timeframe_df.iloc[-1]["sma"]),
+                            pivot_center=float(timeframe_df.iloc[-1]["center"]),
+                            distance_to_pivot=float(conditions["distance_value"]),
+                            slope=float(conditions["slope_value"])
+                        ),
+                        timestamp=datetime.now()
+                    )
+
+            return None # Nenhum sinal de entrada normal encontrado
+
         except Exception as e:
             logger.log_error(e, context=f"Primary entry analysis for {symbol}")
             return None
     
     def _try_reentry(self, df_2h: pd.DataFrame, df_4h: pd.DataFrame, symbol: str) -> Optional[TradingSignal]:
         """
-        REENTRADA: Distância ≥2% entre preço atual e MM1 (2h e 4h timeframes) com confiança fixa 0.60
+        REENTRADA: Distância percentual entre preço ao vivo e a 'center' de 2h ou 4h.
+        - 2% ou mais de diferença da 'center' de 2hrs
+        - 3% ou mais de diferença da 'center' de 4hrs
+        - Sem interferência do RSI.
         """
         try:
-            # Importar método para cálculo de distância MM1
-            from analysis.indicators import IndicatorCalculator
-            
-            # Preço atual (último do 5m para máxima precisão)
+            # Preço "ao vivo" é o último preço de fechamento disponível (do timeframe base de 5m)
+            # df_2h e df_4h são construídos a partir dos 5m, então o último 'close' deles reflete o preço mais recente.
             current_price = float(df_2h.iloc[-1]["close"])
+
+            if "center" not in df_2h.columns or "center" not in df_4h.columns:
+                logger.warning("reentry_check_failed_no_center", symbol=symbol)
+                return None
+
+            center_2h = float(df_2h["center"].iloc[-1])
+            center_4h = float(df_4h["center"].iloc[-1])
+
+            if pd.isna(center_2h) or pd.isna(center_4h) or center_2h == 0 or center_4h == 0:
+                logger.debug("reentry_check_failed_invalid_center", symbol=symbol, center_2h=center_2h, center_4h=center_4h)
+                return None
+
+            # Calcular a distância percentual do preço atual para a 'center' de cada timeframe
+            distance_2h_pct = abs(current_price - center_2h) / center_2h * 100
+            distance_4h_pct = abs(current_price - center_4h) / center_4h * 100
+
+            # Verificar as condições de reentrada
+            reentry_2h_triggered = distance_2h_pct >= 2.0
+            reentry_4h_triggered = distance_4h_pct >= 3.0
+
+            if not (reentry_2h_triggered or reentry_4h_triggered):
+                return None # Nenhuma condição de reentrada foi atendida
+
+            # Determinar a direção do sinal (compra se o preço está abaixo da center, venda se acima)
+            # Usamos a 'center' do timeframe que acionou o gatilho, ou a de 4h se ambos acionaram.
+            side = None
+            if current_price < center_4h and current_price < center_2h:
+                side = "BUY"
+            elif current_price > center_4h and current_price > center_2h:
+                side = "SELL"
             
-            # MM1 dos timeframes 2h e 4h (equivale ao próprio preço desses TFs)
-            mm1_2h = df_2h["mm1"] if "mm1" in df_2h.columns else df_2h["close"]
-            mm1_4h = df_4h["mm1"] if "mm1" in df_4h.columns else df_4h["close"]
-            
-            # Calcular distâncias usando o método específico
-            distance_2h = IndicatorCalculator.calculate_distance_to_mm1(current_price, mm1_2h)
-            distance_4h = IndicatorCalculator.calculate_distance_to_mm1(current_price, mm1_4h)
-            
-            # Verificar se ambos timeframes têm distância ≥ 2%
-            if distance_2h >= 2.0 and distance_4h >= 2.0:
-                mm1_2h_value = float(mm1_2h.iloc[-1])
-                mm1_4h_value = float(mm1_4h.iloc[-1])
-                
-                # REENTRADA LONG: preço < MM1 em AMBOS timeframes
-                if current_price < mm1_2h_value and current_price < mm1_4h_value:
-                    return TradingSignal(
-                        symbol=symbol,
-                        side="BUY",
-                        confidence=0.60,  # Confiança fixa para reentrada
-                        entry_type="reentry",  # Marcar como reentrada
-                        entry_price=current_price,
-                        stop_loss=current_price * (1 - settings.stop_loss_pct),
-                        take_profit=current_price * (1 + settings.take_profit_pct),
-                        signal_type=SignalType.LONG,
+            if not side:
+                return None
+
+            # Se a condição foi atendida, criar o sinal de reentrada
+            logger.info("reentry_signal_triggered", 
+                        symbol=symbol, 
+                        side=side,
                         price=current_price,
-                        indicators=TechnicalIndicators(
-                            distance_to_pivot=distance_2h,
-                            sma=mm1_2h_value,
-                            pivot_center=(mm1_2h_value + mm1_4h_value) / 2
-                        ),
-                        timestamp=datetime.now()
-                    )
-                
-                # REENTRADA SHORT: preço > MM1 em AMBOS timeframes
-                elif current_price > mm1_2h_value and current_price > mm1_4h_value:
-                    return TradingSignal(
-                        symbol=symbol,
-                        side="SELL",
-                        confidence=0.60,  # Confiança fixa para reentrada
-                        entry_type="reentry",  # Marcar como reentrada
-                        entry_price=current_price,
-                        stop_loss=current_price * (1 + settings.stop_loss_pct),
-                        take_profit=current_price * (1 - settings.take_profit_pct),
-                        signal_type=SignalType.SHORT,
-                        price=current_price,
-                        indicators=TechnicalIndicators(
-                            distance_to_pivot=distance_2h,
-                            sma=mm1_2h_value,
-                            pivot_center=(mm1_2h_value + mm1_4h_value) / 2
-                        ),
-                        timestamp=datetime.now()
-                    )
-            
-            return None
-            
+                        center_2h=center_2h,
+                        dist_2h_pct=distance_2h_pct,
+                        center_4h=center_4h,
+                        dist_4h_pct=distance_4h_pct)
+
+            return TradingSignal(
+                symbol=symbol,
+                side=side,
+                confidence=0.65,  # Confiança fixa, ligeiramente maior para reentradas qualificadas
+                entry_type="reentry",
+                entry_price=current_price,
+                stop_loss=current_price * (1 - settings.stop_loss_pct) if side == "BUY" else current_price * (1 + settings.stop_loss_pct),
+                take_profit=current_price * (1 + settings.take_profit_pct) if side == "BUY" else current_price * (1 - settings.take_profit_pct),
+                signal_type=SignalType.LONG if side == "BUY" else SignalType.SHORT,
+                price=current_price,
+                indicators=TechnicalIndicators(
+                    rsi=float(df_4h.iloc[-1].get("rsi", 0)), # RSI não é usado para decisão, mas é bom registrar
+                    sma=float(df_4h.iloc[-1].get("sma", 0)),
+                    pivot_center=center_4h,
+                    distance_to_pivot=distance_4h_pct,
+                    slope=float(df_4h.iloc[-1].get("slope", 0))
+                ),
+                timestamp=datetime.now()
+            )
+
         except Exception as e:
             logger.log_error(e, context=f"Reentry analysis for {symbol}")
             return None

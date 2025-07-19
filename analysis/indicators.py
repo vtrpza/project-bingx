@@ -444,8 +444,8 @@ class IndicatorCalculator:
         try:
             latest = df.iloc[-1]
             
-            # Condições básicas mais flexíveis para gerar mais sinais
-            rsi_ok = not pd.isna(latest["rsi"]) and 15 < latest["rsi"] < 85  # Mais flexível
+            # Condições básicas
+            rsi_ok = not pd.isna(latest["rsi"]) and rsi_min < latest["rsi"] < rsi_max
             slope_ok = not pd.isna(latest["slope"]) and latest["slope"] >= -0.1  # Aceita slope negativo pequeno
             distance_ok = latest["distance_to_pivot"] >= 0.1  # Muito reduzido para gerar mais sinais
             
