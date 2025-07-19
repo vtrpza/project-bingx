@@ -226,6 +226,63 @@ class DemoLogHandler(logging.Handler):
             'last_update': datetime.now().isoformat()
         }
 
+    def get_portfolio_summary(self):
+        """Extrai o resumo do portfólio, incluindo PNL."""
+        pnl = 0
+        winning_trades = 0
+        losing_trades = 0
+        
+        for log in self.records:
+            event = log.get('event', '').lower()
+            # Assumindo que o log de fechamento de trade contém 'profit_loss'
+            if 'trade closed' in event or 'exit position' in event or 'pnl' in log:
+                profit_loss = log.get('profit_loss', log.get('pnl', 0))
+                if profit_loss:
+                    pnl += float(profit_loss)
+                    if float(profit_loss) > 0:
+                        winning_trades += 1
+                    elif float(profit_loss) < 0:
+                        losing_trades += 1
+
+        total_trades = winning_trades + losing_trades
+        win_rate = (winning_trades / max(total_trades, 1)) * 100
+        
+        return {
+            'total_pnl': pnl,
+            'win_rate': win_rate,
+            'winning_trades': winning_trades,
+            'losing_trades': losing_trades,
+            'total_trades': total_trades
+        }
+
+    def get_open_positions(self):
+        """Rastreia e retorna as posições atualmente abertas."""
+        positions = {}
+        for log in self.records:
+            event = log.get('event', '').lower()
+            symbol = log.get('symbol')
+            
+            if not symbol:
+                continue
+
+            # Uma nova posição é aberta
+            if any(keyword in event for keyword in ['entry order filled', 'new position opened', 'opened position']):
+                positions[symbol] = {
+                    'symbol': symbol,
+                    'entry_price': log.get('price'),
+                    'quantity': log.get('quantity'),
+                    'side': log.get('side'),
+                    'timestamp': log.get('timestamp'),
+                    'entry_type': log.get('entry_type')
+                }
+
+            # Uma posição é fechada
+            if any(keyword in event for keyword in ['exit order filled', 'position closed', 'closed position']):
+                if symbol in positions:
+                    del positions[symbol]
+                    
+        return list(positions.values())
+
 demo_log_handler = DemoLogHandler()
 
 def serialize_datetime(obj):
@@ -472,6 +529,8 @@ class DemoManager:
             "trading_signals": self.log_handler.get_trading_signals_data(),
             "order_execution": self.log_handler.get_order_execution_data(),
             "real_time_metrics": self.log_handler.get_real_time_metrics(),
+            "portfolio_summary": self.log_handler.get_portfolio_summary(),
+            "open_positions": self.log_handler.get_open_positions(),
             "last_report": self.last_report,
             "total_logs": len(self.log_handler.get_logs())
         }
@@ -643,66 +702,105 @@ async def demo_dashboard():
         <meta charset="UTF-8">
         <title>Painel de Controle da Demonstração</title>
         <style>
-            body { font-family: monospace; background-color: #1e1e1e; color: #d4d4d4; padding: 20px; }
-            .container { max-width: 800px; margin: 0 auto; background-color: #252526; padding: 20px; border-radius: 8px; }
-            h1 { color: #569cd6; }
-            h2 { color: #9cd656; }
-            button { background-color: #007acc; color: white; padding: 10px 15px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
-            button:hover { background-color: #005f99; }
-            pre { background-color: #1c1c1c; padding: 15px; border-radius: 5px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; }
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #1a1a2e; color: #e0e0e0; margin: 0; padding: 20px; }
+            .container { max-width: 1400px; margin: 0 auto; background-color: #16213e; padding: 25px; border-radius: 10px; box-shadow: 0 0 20px rgba(0, 0, 0, 0.5); }
+            h1 { color: #0f3460; text-align: center; margin-bottom: 30px; font-size: 2.5em; }
+            h2 { color: #e94560; border-bottom: 2px solid #0f3460; padding-bottom: 10px; margin-top: 30px; margin-bottom: 20px; font-size: 1.8em; }
+            button { background-color: #0f3460; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 1em; transition: background-color 0.3s ease; }
+            button:hover { background-color: #e94560; }
+            pre { background-color: #0a1128; padding: 15px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; font-size: 0.9em; line-height: 1.4; }
             .status-indicator { font-weight: bold; }
-            .status-running { color: #00d4aa; }
-            .status-stopped { color: #ff6b6b; }
-            .log-entry { margin-bottom: 5px; padding: 8px; border-radius: 4px; background-color: #2d2d2d; }
-            .log-entry:nth-child(even) { background-color: #3a3a3a; }
-            .flow-entry { margin-bottom: 10px; padding: 10px; border-radius: 5px; background-color: #0a4d3a; border-left: 4px solid #00d4aa; }
-            .flow-entry.error { background-color: #4d0a0a; border-left-color: #ff6b6b; }
-            .flow-entry.warning { background-color: #4d3a0a; border-left-color: #ffd93d; }
-            .flow-symbol { font-weight: bold; color: #569cd6; }
-            .flow-type { color: #9cd656; font-weight: bold; }
-            .flow-confidence { color: #ffd93d; }
-            .flow-price { color: #ff6b6b; }
-            .button-group { margin-bottom: 10px; }
-            .button-group button { margin-right: 5px; }
-            .section { margin-bottom: 30px; padding: 20px; border-radius: 8px; background-color: #2d2d2d; }
-            .control-row { display: flex; gap: 15px; align-items: center; margin-bottom: 10px; }
-            .control-row label { color: #d4d4d4; }
-            .control-row input { padding: 5px; border-radius: 3px; border: 1px solid #555; background-color: #1e1e1e; color: #d4d4d4; }
-            .status-row { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
-            .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
-            .metric-card { background-color: #1e1e1e; padding: 15px; border-radius: 5px; text-align: center; }
-            .metric-value { font-size: 24px; font-weight: bold; color: #00d4aa; }
-            .metric-label { font-size: 12px; color: #999; margin-top: 5px; }
-            .symbol-card { background-color: #1e1e1e; padding: 15px; border-radius: 5px; margin-bottom: 10px; }
-            .symbol-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-            .symbol-name { font-weight: bold; color: #569cd6; font-size: 16px; }
-            .symbol-time { color: #999; font-size: 12px; }
-            .indicator-row { display: flex; gap: 20px; margin-bottom: 5px; }
-            .indicator { display: flex; align-items: center; gap: 5px; }
-            .indicator-label { color: #999; font-size: 12px; }
-            .indicator-value { font-weight: bold; }
-            .indicator-value.up { color: #00d4aa; }
-            .indicator-value.down { color: #ff6b6b; }
-            .indicator-value.neutral { color: #ffd93d; }
-            .signal-item { background-color: #1e1e1e; padding: 10px; border-radius: 5px; margin-bottom: 8px; border-left: 4px solid #00d4aa; }
-            .signal-item.primary { border-left-color: #569cd6; }
-            .signal-item.reentry { border-left-color: #9cd656; }
-            .signal-item.failed { border-left-color: #ff6b6b; }
-            .signal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
-            .signal-type { font-weight: bold; padding: 2px 6px; border-radius: 3px; font-size: 11px; }
-            .signal-type.primary { background-color: #569cd6; color: white; }
-            .signal-type.reentry { background-color: #9cd656; color: black; }
-            .signal-confidence { color: #ffd93d; font-weight: bold; }
-            .signal-decision { font-size: 12px; color: #999; }
-            .order-item { background-color: #1e1e1e; padding: 10px; border-radius: 5px; margin-bottom: 8px; border-left: 4px solid #00d4aa; }
-            .order-item.failed { border-left-color: #ff6b6b; }
-            .order-item.pending { border-left-color: #ffd93d; }
-            .order-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
-            .order-side { font-weight: bold; padding: 2px 6px; border-radius: 3px; font-size: 11px; }
-            .order-side.buy { background-color: #00d4aa; color: white; }
-            .order-side.sell { background-color: #ff6b6b; color: white; }
-            .order-details { font-size: 12px; color: #999; }
-            .empty-state { text-align: center; color: #999; padding: 20px; }
+            .status-running { color: #4CAF50; }
+            .status-stopped { color: #f44336; }
+            .section { margin-bottom: 30px; padding: 20px; border-radius: 10px; background-color: #0a1128; box-shadow: 0 0 15px rgba(0, 0, 0, 0.3); }
+            .control-row { display: flex; gap: 20px; align-items: center; margin-bottom: 20px; }
+            .control-row label { color: #b0b0b0; font-size: 1.1em; }
+            .control-row input[type="number"], .control-row input[type="text"] { padding: 8px; border-radius: 5px; border: 1px solid #0f3460; background-color: #1a1a2e; color: #e0e0e0; width: 150px; }
+            .status-row { display: flex; justify-content: space-between; align-items: center; margin-top: 15px; padding-top: 15px; border-top: 1px solid #0f3460; }
+            
+            /* Grid Layout for main content */
+            .main-content-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 25px; }
+            .left-column { display: flex; flex-direction: column; gap: 25px; }
+            .right-column { display: flex; flex-direction: column; gap: 25px; }
+
+            /* Metrics Grid */
+            .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-top: 20px; }
+            .metric-card { background-color: #0f3460; padding: 15px; border-radius: 8px; text-align: center; box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2); }
+            .metric-value { font-size: 2.2em; font-weight: bold; color: #e94560; margin-bottom: 5px; }
+            .metric-label { font-size: 0.9em; color: #b0b0b0; }
+
+            /* Portfolio Summary */
+            .portfolio-summary-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin-top: 20px; }
+            .portfolio-card { background-color: #0f3460; padding: 15px; border-radius: 8px; text-align: center; box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2); }
+            .portfolio-value { font-size: 2.2em; font-weight: bold; color: #e94560; margin-bottom: 5px; }
+            .portfolio-value.positive { color: #4CAF50; }
+            .portfolio-value.negative { color: #f44336; }
+            .portfolio-label { font-size: 0.9em; color: #b0b0b0; }
+
+            /* Technical Analysis */
+            .symbol-card { background-color: #0a1128; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #0f3460; }
+            .symbol-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px dashed #0f3460; padding-bottom: 8px; }
+            .symbol-name { font-weight: bold; color: #e94560; font-size: 1.3em; }
+            .symbol-time { color: #b0b0b0; font-size: 0.8em; }
+            .indicator-row { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 10px; }
+            .indicator { display: flex; flex-direction: column; align-items: flex-start; }
+            .indicator-label { color: #b0b0b0; font-size: 0.85em; margin-bottom: 3px; }
+            .indicator-value { font-weight: bold; font-size: 1.1em; }
+            .indicator-value.up { color: #4CAF50; }
+            .indicator-value.down { color: #f44336; }
+            .indicator-value.neutral { color: #FFC107; }
+            .rsi-bar-container { width: 100px; height: 10px; background-color: #333; border-radius: 5px; overflow: hidden; margin-top: 5px; }
+            .rsi-bar { height: 100%; background-color: #e94560; transition: width 0.5s ease-in-out; }
+            .rsi-bar.overbought { background-color: #f44336; }
+            .rsi-bar.oversold { background-color: #4CAF50; }
+
+            /* Trading Signals */
+            .signal-item { background-color: #0a1128; padding: 12px; border-radius: 8px; margin-bottom: 10px; border-left: 5px solid; border-color: #0f3460; box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2); }
+            .signal-item.primary { border-color: #e94560; }
+            .signal-item.reentry { border-color: #4CAF50; }
+            .signal-item.failed { border-color: #f44336; }
+            .signal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+            .signal-type { font-weight: bold; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; color: white; }
+            .signal-type.primary { background-color: #e94560; }
+            .signal-type.reentry { background-color: #4CAF50; }
+            .signal-confidence { color: #FFC107; font-weight: bold; font-size: 1.1em; }
+            .signal-details { font-size: 0.9em; color: #b0b0b0; line-height: 1.5; }
+            .signal-details strong { color: #e0e0e0; }
+
+            /* Order Execution */
+            .order-item { background-color: #0a1128; padding: 12px; border-radius: 8px; margin-bottom: 10px; border-left: 5px solid; border-color: #0f3460; box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2); }
+            .order-item.success { border-color: #4CAF50; }
+            .order-item.failed { border-color: #f44336; }
+            .order-item.pending { border-color: #FFC107; }
+            .order-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+            .order-side { font-weight: bold; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; color: white; }
+            .order-side.buy { background-color: #4CAF50; }
+            .order-side.sell { background-color: #f44336; }
+            .order-details { font-size: 0.9em; color: #b0b0b0; line-height: 1.5; }
+            .order-details strong { color: #e0e0e0; }
+            .order-error { color: #f44336; font-weight: bold; margin-top: 5px; }
+
+            /* Open Positions */
+            .position-item { background-color: #0a1128; padding: 12px; border-radius: 8px; margin-bottom: 10px; border-left: 5px solid #0f3460; box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2); }
+            .position-item.long { border-color: #4CAF50; }
+            .position-item.short { border-color: #f44336; }
+            .position-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+            .position-symbol { font-weight: bold; color: #e94560; font-size: 1.2em; }
+            .position-side { font-weight: bold; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; color: white; }
+            .position-side.long { background-color: #4CAF50; }
+            .position-side.short { background-color: #f44336; }
+            .position-details { font-size: 0.9em; color: #b0b0b0; line-height: 1.5; }
+            .position-details strong { color: #e0e0e0; }
+
+            /* Logs */
+            .log-entry { margin-bottom: 5px; padding: 8px; border-radius: 4px; background-color: #0f3460; font-size: 0.85em; }
+            .log-entry:nth-child(even) { background-color: #16213e; }
+            .log-entry.info { color: #b0b0b0; }
+            .log-entry.warning { color: #FFC107; }
+            .log-entry.error { color: #f44336; font-weight: bold; }
+            .button-group button { margin-right: 10px; background-color: #0f3460; }
+            .button-group button.active { background-color: #e94560; }
+            .empty-state { text-align: center; color: #b0b0b0; padding: 20px; font-style: italic; }
         </style>
     </head>
     <body>
@@ -717,59 +815,102 @@ async def demo_dashboard():
                     <label>Símbolos: <input type="text" id="symbols" value="BTC-USDT,ETH-USDT"></label>
                     <button onclick="startDemo()">Iniciar Demo</button>
                 </div>
-                <div id="start-message"></div>
+                <div id="start-message" style="color: #FFC107; margin-top: 10px;"></div>
                 <div class="status-row">
                     <span>Status: <span id="demo-status" class="status-stopped">Parado</span></span>
-                    <button onclick="getDemoStatus()">🔄 Atualizar</button>
+                    <button onclick="getDemoStatus()">🔄 Atualizar Dados</button>
                 </div>
             </div>
 
-            <!-- Seção de Métricas em Tempo Real -->
-            <div class="section">
-                <h2>📈 Métricas em Tempo Real</h2>
-                <div class="metrics-grid">
-                    <div class="metric-card">
-                        <div class="metric-value" id="total-scans">0</div>
-                        <div class="metric-label">Scans Realizados</div>
+            <div class="main-content-grid">
+                <div class="left-column">
+                    <!-- Seção de Métricas em Tempo Real -->
+                    <div class="section">
+                        <h2>📈 Métricas em Tempo Real</h2>
+                        <div class="metrics-grid">
+                            <div class="metric-card">
+                                <div class="metric-value" id="total-scans">0</div>
+                                <div class="metric-label">Scans Realizados</div>
+                            </div>
+                            <div class="metric-card">
+                                <div class="metric-value" id="signals-generated">0</div>
+                                <div class="metric-label">Sinais Gerados</div>
+                            </div>
+                            <div class="metric-card">
+                                <div class="metric-value" id="orders-executed">0</div>
+                                <div class="metric-label">Ordens Executadas</div>
+                            </div>
+                            <div class="metric-card">
+                                <div class="metric-value" id="success-rate">0%</div>
+                                <div class="metric-label">Taxa de Sucesso</div>
+                            </div>
+                        </div>
                     </div>
-                    <div class="metric-card">
-                        <div class="metric-value" id="signals-generated">0</div>
-                        <div class="metric-label">Sinais Gerados</div>
+
+                    <!-- Seção de Resumo do Portfólio -->
+                    <div class="section">
+                        <h2>💰 Resumo do Portfólio</h2>
+                        <div class="portfolio-summary-grid">
+                            <div class="portfolio-card">
+                                <div class="portfolio-value" id="total-pnl">$0.00</div>
+                                <div class="portfolio-label">PNL Total</div>
+                            </div>
+                            <div class="portfolio-card">
+                                <div class="portfolio-value" id="win-rate">0%</div>
+                                <div class="portfolio-label">Taxa de Vitória</div>
+                            </div>
+                            <div class="portfolio-card">
+                                <div class="portfolio-value" id="winning-trades">0</div>
+                                <div class="portfolio-label">Trades Vencedores</div>
+                            </div>
+                            <div class="portfolio-card">
+                                <div class="portfolio-value" id="losing-trades">0</div>
+                                <div class="portfolio-label">Trades Perdedores</div>
+                            </div>
+                        </div>
                     </div>
-                    <div class="metric-card">
-                        <div class="metric-value" id="orders-executed">0</div>
-                        <div class="metric-label">Ordens Executadas</div>
+
+                    <!-- Seção de Análise Técnica -->
+                    <div class="section">
+                        <h2>📊 Análise Técnica por Símbolo</h2>
+                        <div id="technical-analysis">
+                            <div class="empty-state">Aguardando dados de análise técnica...</div>
+                        </div>
                     </div>
-                    <div class="metric-card">
-                        <div class="metric-value" id="success-rate">0%</div>
-                        <div class="metric-label">Taxa de Sucesso</div>
+
+                    <!-- Seção de Sinais de Trading -->
+                    <div class="section">
+                        <h2>🎯 Sinais de Trading</h2>
+                        <div id="trading-signals">
+                            <div class="empty-state">Nenhum sinal de trading detectado.</div>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Seção de Análise Técnica -->
-            <div class="section">
-                <h2>📊 Análise Técnica por Símbolo</h2>
-                <div id="technical-analysis"></div>
-            </div>
+                <div class="right-column">
+                    <!-- Seção de Posições Abertas -->
+                    <div class="section">
+                        <h2>💼 Posições Abertas</h2>
+                        <div id="open-positions">
+                            <div class="empty-state">Nenhuma posição aberta.</div>
+                        </div>
+                    </div>
 
-            <!-- Seção de Sinais de Trading -->
-            <div class="section">
-                <h2>🎯 Sinais de Trading</h2>
-                <div id="trading-signals"></div>
-            </div>
-
-            <!-- Seção de Execução de Ordens -->
-            <div class="section">
-                <h2>📋 Execução de Ordens</h2>
-                <div id="order-execution"></div>
+                    <!-- Seção de Execução de Ordens -->
+                    <div class="section">
+                        <h2>📋 Execução de Ordens</h2>
+                        <div id="order-execution">
+                            <div class="empty-state">Nenhuma ordem executada.</div>
+                        </div>
+                    </div>
+                </div>
             </div>
             
             <!-- Seção de Logs Detalhados -->
             <div class="section">
                 <h2>📝 Logs Detalhados</h2>
                 <div class="button-group">
-                    <button onclick="toggleLogType('all')">Todos</button>
+                    <button onclick="toggleLogType('all')" class="active">Todos</button>
                     <button onclick="toggleLogType('flow')">Apenas Fluxo</button>
                     <button onclick="toggleLogType('errors')">Apenas Erros</button>
                 </div>
@@ -815,6 +956,12 @@ async def demo_dashboard():
                 // Atualizar métricas em tempo real
                 updateRealTimeMetrics(data.real_time_metrics);
                 
+                // Atualizar resumo do portfólio
+                updatePortfolioSummary(data.portfolio_summary);
+
+                // Atualizar posições abertas
+                updateOpenPositions(data.open_positions);
+
                 // Atualizar análise técnica
                 updateTechnicalAnalysis(data.technical_analysis);
                 
@@ -839,6 +986,50 @@ async def demo_dashboard():
                 document.getElementById('orders-executed').textContent = metrics.orders_executed || 0;
                 document.getElementById('success-rate').textContent = `${metrics.success_rate?.toFixed(1) || 0}%`;
             }
+
+            function updatePortfolioSummary(summary) {
+                if (!summary) return;
+
+                const pnlElement = document.getElementById('total-pnl');
+                pnlElement.textContent = `${summary.total_pnl?.toFixed(2) || '0.00'}`;
+                pnlElement.className = `portfolio-value ${summary.total_pnl >= 0 ? 'positive' : 'negative'}`;
+
+                document.getElementById('win-rate').textContent = `${summary.win_rate?.toFixed(1) || '0.0'}%`;
+                document.getElementById('winning-trades').textContent = summary.winning_trades || 0;
+                document.getElementById('losing-trades').textContent = summary.losing_trades || 0;
+            }
+
+            function updateOpenPositions(positions) {
+                const container = document.getElementById('open-positions');
+                container.innerHTML = '';
+
+                if (!positions || positions.length === 0) {
+                    container.innerHTML = '<div class="empty-state">Nenhuma posição aberta.</div>';
+                    return;
+                }
+
+                positions.forEach(position => {
+                    const positionDiv = document.createElement('div');
+                    const sideClass = position.side?.toLowerCase() === 'buy' ? 'long' : 'short';
+                    positionDiv.className = `position-item ${sideClass}`;
+
+                    positionDiv.innerHTML = `
+                        <div class="position-header">
+                            <div class="position-symbol">${position.symbol || 'N/A'}</div>
+                            <span class="position-side ${sideClass}">${position.side || 'N/A'}</span>
+                        </div>
+                        <div class="position-details">
+                            <strong>Entrada:</strong> ${position.entry_price?.toFixed(2) || 'N/A'} | 
+                            <strong>Qtd:</strong> ${position.quantity || 'N/A'} | 
+                            <strong>Tipo:</strong> ${position.entry_type || 'N/A'}
+                        </div>
+                        <div class="position-details">
+                            ${new Date(position.timestamp).toLocaleTimeString()}
+                        </div>
+                    `;
+                    container.appendChild(positionDiv);
+                });
+            }
             
             function updateTechnicalAnalysis(technicalData) {
                 const container = document.getElementById('technical-analysis');
@@ -853,7 +1044,7 @@ async def demo_dashboard():
                     const symbolDiv = document.createElement('div');
                     symbolDiv.className = 'symbol-card';
                     
-                    const rsiClass = data.rsi > 70 ? 'down' : data.rsi < 30 ? 'up' : 'neutral';
+                    const rsiClass = data.rsi > 70 ? 'overbought' : data.rsi < 30 ? 'oversold' : '';
                     const trendClass = data.trend === 'UP' ? 'up' : data.trend === 'DOWN' ? 'down' : 'neutral';
                     const distanceClass = data.distance_percent > 2 ? 'up' : data.distance_percent < -2 ? 'down' : 'neutral';
                     
@@ -866,23 +1057,42 @@ async def demo_dashboard():
                             <div class="indicator">
                                 <span class="indicator-label">RSI:</span>
                                 <span class="indicator-value ${rsiClass}">${data.rsi?.toFixed(1) || 'N/A'}</span>
+                                <div class="rsi-bar-container"><div class="rsi-bar ${rsiClass}" style="width: ${data.rsi || 0}%;"></div></div>
                             </div>
                             <div class="indicator">
                                 <span class="indicator-label">Preço:</span>
-                                <span class="indicator-value">${data.price ? '$' + data.price.toFixed(2) : 'N/A'}</span>
+                                <span class="indicator-value">${data.price ? '
+
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+        log_level="info"
+    ) + data.price.toFixed(2) : 'N/A'}</span>
                             </div>
                             <div class="indicator">
                                 <span class="indicator-label">SMA:</span>
-                                <span class="indicator-value">${data.sma ? '$' + data.sma.toFixed(2) : 'N/A'}</span>
+                                <span class="indicator-value">${data.sma ? '
+
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+        log_level="info"
+    ) + data.sma.toFixed(2) : 'N/A'}</span>
                             </div>
-                        </div>
-                        <div class="indicator-row">
                             <div class="indicator">
                                 <span class="indicator-label">Distância:</span>
                                 <span class="indicator-value ${distanceClass}">${data.distance_percent ? data.distance_percent.toFixed(2) + '%' : 'N/A'}</span>
                             </div>
                             <div class="indicator">
-                                <span class="indicator-label">Trend:</span>
+                                <span class="indicator-label">Tendência:</span>
                                 <span class="indicator-value ${trendClass}">${data.trend || 'N/A'}</span>
                             </div>
                         </div>
@@ -912,10 +1122,16 @@ async def demo_dashboard():
                                 <span class="signal-type ${entryType}">${signal.entry_type || 'UNKNOWN'}</span>
                                 <strong>${signal.symbol || 'N/A'}</strong>
                             </div>
-                            <div class="signal-confidence">Conf: ${signal.confidence || 'N/A'}</div>
+                            <div class="signal-confidence">Confiança: ${signal.confidence || 'N/A'}</div>
                         </div>
-                        <div class="signal-decision">${signal.decision || 'N/A'}: ${signal.reason || 'N/A'}</div>
-                        <div class="signal-decision">${new Date(signal.timestamp).toLocaleTimeString()}</div>
+                        <div class="signal-details">
+                            <strong>Decisão:</strong> ${signal.decision || 'N/A'} | 
+                            <strong>Motivo:</strong> ${signal.reason || 'N/A'} | 
+                            <strong>Preço:</strong> ${signal.price?.toFixed(2) || 'N/A'}
+                        </div>
+                        <div class="signal-details">
+                            ${new Date(signal.timestamp).toLocaleTimeString()}
+                        </div>
                     `;
                     
                     container.appendChild(signalDiv);
@@ -942,14 +1158,16 @@ async def demo_dashboard():
                                 <span class="order-side ${order.side?.toLowerCase() || 'unknown'}">${order.side || 'N/A'}</span>
                                 <strong>${order.symbol || 'N/A'}</strong>
                             </div>
-                            <div class="order-details">${order.status || 'N/A'}</div>
+                            <div class="order-details">Status: ${order.status || 'N/A'}</div>
                         </div>
                         <div class="order-details">
-                            Preço: ${order.price ? '$' + order.price.toFixed(2) : 'N/A'} | 
-                            Quantidade: ${order.quantity || 'N/A'} | 
+                            <strong>Preço:</strong> ${order.price?.toFixed(2) || 'N/A'} | 
+                            <strong>Quantidade:</strong> ${order.quantity || 'N/A'}
+                        </div>
+                        <div class="order-details">
                             ${new Date(order.timestamp).toLocaleTimeString()}
                         </div>
-                        ${order.error ? `<div class="order-details" style="color: #ff6b6b;">Erro: ${order.error}</div>` : ''}
+                        ${order.error ? `<div class="order-error">Erro: ${order.error}</div>` : ''}
                     `;
                     
                     container.appendChild(orderDiv);
@@ -980,17 +1198,20 @@ async def demo_dashboard():
                 
                 filteredLogs.forEach(log => {
                     const logEntryDiv = document.createElement('div');
-                    logEntryDiv.className = 'log-entry';
+                    logEntryDiv.className = `log-entry ${log.level || 'info'}`;
                     
                     let logMessage = `[${new Date(log.timestamp).toLocaleTimeString()}] [${(log.level || 'info').toUpperCase()}] ${log.event || log.message}`;
                     
                     // Adicionar campos importantes
-                    if (log.symbol) logMessage += ` symbol=${log.symbol}`;
-                    if (log.signal_type) logMessage += ` signal=${log.signal_type}`;
-                    if (log.confidence) logMessage += ` confidence=${log.confidence}`;
-                    if (log.price) logMessage += ` price=${log.price}`;
-                    if (log.entry_type) logMessage += ` entry=${log.entry_type}`;
-                    if (log.logger_name) logMessage += ` [${log.logger_name}]`;
+                    if (log.symbol) logMessage += ` | Symbol: ${log.symbol}`;
+                    if (log.signal_type) logMessage += ` | Signal: ${log.signal_type}`;
+                    if (log.confidence) logMessage += ` | Confidence: ${log.confidence}`;
+                    if (log.price) logMessage += ` | Price: ${log.price}`;
+                    if (log.entry_type) logMessage += ` | Entry: ${log.entry_type}`;
+                    if (log.logger_name) logMessage += ` | Logger: ${log.logger_name}`;
+                    if (log.module) logMessage += ` | Module: ${log.module}`;
+                    if (log.funcName) logMessage += ` | Function: ${log.funcName}`;
+                    if (log.lineno) logMessage += ` | Line: ${log.lineno}`;
                     
                     logEntryDiv.textContent = logMessage;
                     logsElement.appendChild(logEntryDiv);
@@ -1003,9 +1224,9 @@ async def demo_dashboard():
                 
                 // Atualizar visual dos botões
                 document.querySelectorAll('.button-group button').forEach(btn => {
-                    btn.style.backgroundColor = '#007acc';
+                    btn.classList.remove('active');
                 });
-                event.target.style.backgroundColor = '#005f99';
+                event.target.classList.add('active');
             }
 
             // Carregamento inicial do status

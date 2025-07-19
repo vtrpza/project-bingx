@@ -86,7 +86,7 @@ def test_primary_entry():
     conditions_4h = simulate_primary_entry_conditions()
     
     # Testar Primary Entry
-    signal = trading_engine._try_primary_entry(df_4h, conditions_2h, conditions_4h, "BTC/USDT:USDT")
+    signal = trading_engine._try_primary_entry(df_2h, df_4h, conditions_2h, conditions_4h, "BTC/USDT:USDT")
     
     if signal:
         print(f"   ✅ Primary Entry detectada: {signal.side} - Confiança: {signal.confidence:.2f} - Tipo: {signal.entry_type}")
@@ -110,8 +110,8 @@ def test_reentry():
     current_price = 42000.0
     
     # Forçar MM1 para ser diferente do preço atual (≥2% de distância)
-    df_2h.loc[df_2h.index[-1], 'mm1'] = 40800.0  # ~3% de distância
-    df_4h.loc[df_4h.index[-1], 'mm1'] = 40700.0  # ~3% de distância
+    df_2h.loc[df_2h.index[-1], 'center'] = 40800.0  # ~3% de distância
+    df_4h.loc[df_4h.index[-1], 'center'] = 40700.0  # ~3% de distância
     df_2h.loc[df_2h.index[-1], 'close'] = current_price
     df_4h.loc[df_4h.index[-1], 'close'] = current_price
     
@@ -141,7 +141,7 @@ def test_reentry_no_distance():
     
     # Forçar MM1 para ser próxima do preço atual (<2% de distância)
     df_2h.loc[df_2h.index[-1], 'mm1'] = 41790.0  # ~0.5% de distância
-    df_4h.loc[df_4h.index[-1], 'mm1'] = 41895.0  # ~0.25% de distância
+    df_4h.loc[df_4h.index[-1], 'center'] = 41895.0  # ~0.25% de distância
     df_2h.loc[df_2h.index[-1], 'close'] = current_price
     df_4h.loc[df_4h.index[-1], 'close'] = current_price
     
@@ -172,13 +172,13 @@ def test_sequential_logic():
     
     # Configurar também condições de reentrada
     current_price = 42000.0
-    df_2h.loc[df_2h.index[-1], 'mm1'] = 40800.0  # ~3% de distância
-    df_4h.loc[df_4h.index[-1], 'mm1'] = 40700.0  # ~3% de distância
+    df_2h.loc[df_2h.index[-1], 'center'] = 40800.0  # ~3% de distância
+    df_4h.loc[df_4h.index[-1], 'center'] = 40700.0  # ~3% de distância
     df_2h.loc[df_2h.index[-1], 'close'] = current_price
     df_4h.loc[df_4h.index[-1], 'close'] = current_price
     
     # Testar Primary Entry primeiro
-    primary_signal = trading_engine._try_primary_entry(df_4h, conditions_2h, conditions_4h, "BTC/USDT:USDT")
+    primary_signal = trading_engine._try_primary_entry(df_2h, df_4h, conditions_2h, conditions_4h, "BTC/USDT:USDT")
     
     if primary_signal:
         print(f"   ✅ Primary Entry detectada primeiro: {primary_signal.entry_type}")
