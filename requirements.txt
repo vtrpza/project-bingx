@@ -1,4 +1,4 @@
-# Enterprise Trading Bot Requirements - Render Compatible
+# Enterprise Trading Bot Requirements - Consolidated
 # =======================================================
 
 # Core Framework
@@ -12,7 +12,7 @@ aiohttp==3.9.1
 
 # Data Analysis & Trading  
 pandas==2.1.4
-numpy==1.25.2
+numpy>=1.26.0
 pyarrow==14.0.1
 
 # Environment & Config
@@ -37,12 +37,34 @@ backoff==2.2.1
 fastapi-cache2==0.2.1
 
 # Trading Libraries
-ccxt==4.1.92
-
-# Development & Testing (optional)
-pytest==7.4.3
-pytest-asyncio==0.21.1
+ccxt
 
 # Build compatibility
 setuptools==68.2.2
 wheel==0.42.0
+
+# Render-specific
+gunicorn==21.2.0
+
+# Testing
+pytest==8.0.0
+pytest-asyncio==0.23.5
+pytest-cov==4.0.0
+pytest-mock==3.12.0
+pytest-xdist==3.5.0
+httpx==0.26.0
+pytest-httpx==0.29.0
+asyncio-mqtt==0.13.0
+aioresponses==0.7.6
+factory-boy==3.3.0
+freezegun==1.4.0
+responses==0.24.1
+pytest-benchmark==4.0.0
+pytest-timeout==2.2.0
+pytest-postgresql==5.0.0
+psycopg-binary
+pytest-redis==3.0.2
+coverage==7.4.0
+pytest-clarity==1.0.1
+pytest-sugar==0.9.7
+starlette==0.32.0
