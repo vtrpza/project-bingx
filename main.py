@@ -804,7 +804,7 @@ async def health_check():
 async def demo_dashboard():
     """Simple dashboard for demo control and monitoring"""
     return """
-    <!DOCTYPE html>
+    '''    <!DOCTYPE html>
     <html>
     <head>
         <meta charset="UTF-8">
@@ -1415,6 +1415,7 @@ async def demo_dashboard():
         </script>
     </body>
     </html>
+    ''
     """
 
 
