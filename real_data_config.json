@@ -1,0 +1,31 @@
+{
+  "bingx_api": {
+    "base_url": "https://open-api.bingx.com",
+    "endpoints": {
+      "ticker": "/openApi/spot/v1/ticker/24hr",
+      "klines": "/openApi/spot/v1/klines",
+      "depth": "/openApi/spot/v1/depth"
+    }
+  },
+  "cache": {
+    "ttl_seconds": 30,
+    "max_items": 1000,
+    "enable_fallback": true
+  },
+  "validation": {
+    "reject_nan": true,
+    "reject_infinity": true,
+    "min_price": 0.0001,
+    "max_price": 1000000
+  },
+  "symbols": [
+    "BTC-USDT",
+    "ETH-USDT",
+    "BNB-USDT",
+    "ADA-USDT",
+    "DOT-USDT",
+    "LINK-USDT",
+    "SOL-USDT",
+    "AVAX-USDT"
+  ]
+}

@@ -27,10 +27,14 @@ class BingXExchangeManager:
 
     def _format_symbol_for_ccxt(self, symbol: str) -> str:
         """Converte o símbolo de BASE-QUOTE para BASE/QUOTE:USDT."""
+        if not symbol:
+            return symbol
         return symbol.replace('-', '/') + ':USDT'
 
     def _format_symbol_from_ccxt(self, symbol: str) -> str:
         """Converte o símbolo de BASE/QUOTE:USDT para BASE-QUOTE."""
+        if not symbol:
+            return symbol
         # Remove :USDT primeiro, depois substitui / por -
         return symbol.replace(':USDT', '').replace('/', '-')
 
@@ -137,14 +141,15 @@ class BingXExchangeManager:
             # Converter o símbolo para o formato esperado pelo CCXT
             ccxt_symbol = self._format_symbol_for_ccxt(order.symbol)
 
-            placed_order = await self.exchange.create_order(
-                symbol=ccxt_symbol,
-                type=order.order_type.value,
-                side=order.side.value,
-                amount=order.quantity,
-                price=price_param,
-                params=params
-            )
+            async with self.rate_limiter:
+                placed_order = await self.exchange.create_order(
+                    symbol=ccxt_symbol,
+                    type=order.order_type.value,
+                    side=order.side.value,
+                    amount=order.quantity,
+                    price=price_param,
+                    params=params
+                )
             logger.info("order_placement_raw_response", response=placed_order)
 
             if not placed_order:
@@ -169,8 +174,9 @@ class BingXExchangeManager:
     @backoff.on_exception(backoff.expo, RateLimitExceeded, max_tries=5, max_time=60)
     async def get_positions(self) -> List[Position]:
         """Busca as posições de futuros abertas."""
-        # Usando o método correto `fetch_positions`
-        positions = await self.exchange.fetch_positions()
+        async with self.rate_limiter:
+            # Usando o método correto `fetch_positions`
+            positions = await self.exchange.fetch_positions()
         parsed_positions = []
         for p in positions:
             if float(p.get('contracts') or 0.0) != 0:
@@ -342,9 +348,8 @@ class BingXExchangeManager:
     @backoff.on_exception(backoff.expo, RateLimitExceeded, max_tries=5, max_time=60)
     async def get_latest_price(self, symbol: str) -> Optional[float]:
         """Obtém o preço atual de um símbolo."""
-        # Converter o símbolo para o formato esperado pelo CCXT
-        ccxt_symbol = self._format_symbol_for_ccxt(symbol)
-        market_data = await self.get_market_data(ccxt_symbol)
+        # get_market_data já faz a conversão internamente, não converter aqui
+        market_data = await self.get_market_data(symbol)
         return market_data.price if market_data else None
 
     @backoff.on_exception(backoff.expo, RateLimitExceeded, max_tries=5, max_time=60)
@@ -352,9 +357,8 @@ class BingXExchangeManager:
         """Obtém preços atuais para múltiplos símbolos."""
         prices = {}
         for symbol in symbols:
-            # Converter o símbolo para o formato esperado pelo CCXT
-            ccxt_symbol = self._format_symbol_for_ccxt(symbol)
-            price = await self.get_latest_price(ccxt_symbol)
+            # get_latest_price já faz a conversão internamente, não converter aqui
+            price = await self.get_latest_price(symbol)
             if price:
                 prices[symbol] = price # Manter o símbolo original para o TradingEngine
         return prices
@@ -362,23 +366,26 @@ class BingXExchangeManager:
     @backoff.on_exception(backoff.expo, RateLimitExceeded, max_tries=5, max_time=60)
     async def get_ticker(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Obtém ticker de um símbolo."""
-        # Converter o símbolo para o formato esperado pelo CCXT
-        ccxt_symbol = self._format_symbol_for_ccxt(symbol)
-        ticker = await self.exchange.fetch_ticker(ccxt_symbol)
-        return ticker
+        async with self.rate_limiter:
+            # Converter o símbolo para o formato esperado pelo CCXT
+            ccxt_symbol = self._format_symbol_for_ccxt(symbol)
+            ticker = await self.exchange.fetch_ticker(ccxt_symbol)
+            return ticker
 
     @backoff.on_exception(backoff.expo, RateLimitExceeded, max_tries=5, max_time=60)
     async def get_server_time(self) -> int:
         """Obtém timestamp do servidor."""
-        server_time = await self.exchange.fetch_time()
-        return int(server_time)
+        async with self.rate_limiter:
+            server_time = await self.exchange.fetch_time()
+            return int(server_time)
 
     @backoff.on_exception(backoff.expo, RateLimitExceeded, max_tries=5, max_time=60)
     async def get_exchange_info(self) -> Dict[str, Any]:
         """Obtém informações da exchange."""
-        await self.exchange.load_markets()
-        return {"symbols": [{"symbol": self._format_symbol_from_ccxt(symbol), "status": "TRADING" if market.get("active") else "BREAK"} 
-                          for symbol, market in self.exchange.markets.items()]}
+        async with self.rate_limiter:
+            await self.exchange.load_markets()
+            return {"symbols": [{"symbol": self._format_symbol_from_ccxt(symbol), "status": "TRADING" if market.get("active") else "BREAK"} 
+                              for symbol, market in self.exchange.markets.items()]}
 
     def _generate_signature(self, method: str, path: str, params: Dict[str, Any]) -> str:
         """Gera assinatura para autenticação BingX (método de compatibilidade)."""

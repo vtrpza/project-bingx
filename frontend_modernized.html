@@ -1,0 +1,1143 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>👻 FANTASMA Trading Bot - Enterprise Dashboard</title>
+    
+    <!-- Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    
+    <style>
+        /* Design System - Technological & Subtle */
+        :root {
+            /* Base Colors - Dark Tech Theme */
+            --bg-primary: #0f0f0f;
+            --bg-secondary: #1a1a1a;
+            --bg-tertiary: #242424;
+            --bg-card: #1e1e1e;
+            --bg-elevated: #2a2a2a;
+            
+            /* Tech Accent Colors */
+            --accent-primary: #00e5ff;
+            --accent-secondary: #40c4ff;
+            --accent-glow: rgba(0, 229, 255, 0.15);
+            
+            /* Status Colors */
+            --success: #00c851;
+            --success-glow: rgba(0, 200, 81, 0.15);
+            --warning: #ffbb33;
+            --warning-glow: rgba(255, 187, 51, 0.15);
+            --danger: #ff4444;
+            --danger-glow: rgba(255, 68, 68, 0.15);
+            
+            /* Text Colors */
+            --text-primary: #ffffff;
+            --text-secondary: #b3b3b3;
+            --text-muted: #666666;
+            --text-disabled: #404040;
+            
+            /* Borders & Dividers */
+            --border-primary: #333333;
+            --border-secondary: #404040;
+            --border-accent: rgba(0, 229, 255, 0.3);
+            
+            /* Shadows & Effects */
+            --shadow-small: 0 2px 8px rgba(0, 0, 0, 0.3);
+            --shadow-medium: 0 4px 16px rgba(0, 0, 0, 0.4);
+            --shadow-large: 0 8px 32px rgba(0, 0, 0, 0.5);
+            --shadow-glow: 0 0 20px rgba(0, 229, 255, 0.1);
+            
+            /* Animation Timing */
+            --transition-fast: 0.15s ease;
+            --transition-medium: 0.3s ease;
+            --transition-slow: 0.5s ease;
+        }
+
+        /* Reset & Base Styles */
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* Modern Layout System */
+        .main-container {
+            min-height: 100vh;
+            display: grid;
+            grid-template-rows: auto 1fr;
+            background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+        }
+
+        /* Header - Clean & Minimal */
+        .header {
+            background: var(--bg-card);
+            border-bottom: 1px solid var(--border-primary);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            backdrop-filter: blur(10px);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .logo-icon {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: var(--shadow-glow);
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            border-radius: 24px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: var(--transition-medium);
+        }
+
+        .status-indicator.running {
+            background: var(--success-glow);
+            color: var(--success);
+            border: 1px solid var(--success);
+        }
+
+        .status-indicator.stopped {
+            background: var(--danger-glow);
+            color: var(--danger);
+            border: 1px solid var(--danger);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Content Area */
+        .content {
+            padding: 2rem;
+            max-width: 1600px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
+        /* Grid System */
+        .grid {
+            display: grid;
+            gap: 1.5rem;
+        }
+
+        .grid-cols-1 { grid-template-columns: 1fr; }
+        .grid-cols-2 { grid-template-columns: repeat(2, 1fr); }
+        .grid-cols-3 { grid-template-columns: repeat(3, 1fr); }
+        .grid-cols-4 { grid-template-columns: repeat(4, 1fr); }
+
+        /* Card System */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-primary);
+            border-radius: 16px;
+            padding: 1.5rem;
+            transition: var(--transition-medium);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--accent-primary), transparent);
+            opacity: 0;
+            transition: var(--transition-medium);
+        }
+
+        .card:hover {
+            border-color: var(--border-accent);
+            box-shadow: var(--shadow-glow);
+            transform: translateY(-1px);
+        }
+
+        .card:hover::before {
+            opacity: 1;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .card-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .card-subtitle {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            margin-top: 0.25rem;
+        }
+
+        /* Control Panel */
+        .control-panel {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 12px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: var(--transition-medium);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+            transition: var(--transition-medium);
+        }
+
+        .btn:hover::before {
+            left: 100%;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            color: var(--bg-primary);
+            box-shadow: var(--shadow-glow);
+        }
+
+        .btn-secondary {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-secondary);
+        }
+
+        .btn:disabled {
+            background: var(--bg-tertiary);
+            color: var(--text-disabled);
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
+        /* Metrics Cards */
+        .metric-card {
+            text-align: center;
+            padding: 1.5rem;
+        }
+
+        .metric-value {
+            font-size: 2rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 0.5rem;
+        }
+
+        .metric-label {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .metric-change {
+            font-size: 0.75rem;
+            margin-top: 0.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.25rem;
+        }
+
+        .metric-change.positive { color: var(--success); }
+        .metric-change.negative { color: var(--danger); }
+
+        /* Chart Container */
+        .chart-container {
+            position: relative;
+            height: 300px;
+            margin-top: 1rem;
+        }
+
+        .chart-container canvas {
+            border-radius: 8px;
+        }
+
+        /* Data Table */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+
+        .data-table th,
+        .data-table td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border-primary);
+        }
+
+        .data-table th {
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .data-table tr:hover {
+            background: var(--bg-elevated);
+        }
+
+        /* Loading States */
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+            color: var(--text-secondary);
+        }
+
+        .spinner {
+            width: 24px;
+            height: 24px;
+            border: 2px solid var(--border-primary);
+            border-top: 2px solid var(--accent-primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Responsive Design */
+        @media (max-width: 1200px) {
+            .grid-cols-4 { grid-template-columns: repeat(2, 1fr); }
+            .grid-cols-3 { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        @media (max-width: 768px) {
+            .content { padding: 1rem; }
+            .header { padding: 1rem; }
+            .control-panel { flex-direction: column; }
+            .grid-cols-2 { grid-template-columns: 1fr; }
+            .metric-value { font-size: 1.5rem; }
+        }
+
+        /* Utility Classes */
+        .text-success { color: var(--success); }
+        .text-warning { color: var(--warning); }
+        .text-danger { color: var(--danger); }
+        .text-muted { color: var(--text-muted); }
+
+        .bg-success { background: var(--success-glow); }
+        .bg-warning { background: var(--warning-glow); }
+        .bg-danger { background: var(--danger-glow); }
+
+        .border-success { border-color: var(--success); }
+        .border-warning { border-color: var(--warning); }
+        .border-danger { border-color: var(--danger); }
+
+        /* Advanced Features Styling */
+        .feature-card {
+            background: linear-gradient(135deg, var(--bg-card), var(--bg-elevated));
+            border: 1px solid var(--border-accent);
+            position: relative;
+        }
+
+        .feature-card::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 60px;
+            height: 60px;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            opacity: 0.1;
+            border-radius: 0 16px 0 60px;
+        }
+
+        .risk-indicator {
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .risk-low { background: var(--success-glow); color: var(--success); }
+        .risk-medium { background: var(--warning-glow); color: var(--warning); }
+        .risk-high { background: var(--danger-glow); color: var(--danger); }
+
+        /* Animation Classes */
+        .fade-in {
+            animation: fadeIn 0.5s ease forwards;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .slide-in {
+            animation: slideIn 0.3s ease forwards;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+    </style>
+</head>
+<body>
+    <div class="main-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <div class="logo-icon">👻</div>
+                <span>FANTASMA Trading Bot</span>
+                <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 400;">Enterprise v2.0</span>
+            </div>
+            
+            <div class="status-indicator" id="status-indicator">
+                <div class="status-dot"></div>
+                <span id="status-text">Inicializando...</span>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="content">
+            <!-- Control Panel -->
+            <div class="control-panel">
+                <button class="btn btn-primary" id="start-btn">
+                    <i data-lucide="play"></i>
+                    Iniciar Demo
+                </button>
+                <button class="btn btn-secondary" id="pause-btn" disabled>
+                    <i data-lucide="pause"></i>
+                    Pausar
+                </button>
+                <button class="btn btn-secondary" id="reset-btn">
+                    <i data-lucide="refresh-cw"></i>
+                    Reiniciar
+                </button>
+                <button class="btn btn-secondary" id="enterprise-btn">
+                    <i data-lucide="zap"></i>
+                    Recursos Enterprise
+                </button>
+            </div>
+
+            <!-- Metrics Overview -->
+            <div class="grid grid-cols-4" id="metrics-grid">
+                <div class="card metric-card">
+                    <div class="metric-value" id="total-scans">0</div>
+                    <div class="metric-label">Total de Scans</div>
+                    <div class="metric-change" id="scans-change">
+                        <i data-lucide="trending-up"></i>
+                        <span>+0%</span>
+                    </div>
+                </div>
+                
+                <div class="card metric-card">
+                    <div class="metric-value" id="signals-generated">0</div>
+                    <div class="metric-label">Sinais Gerados</div>
+                    <div class="metric-change positive" id="signals-change">
+                        <i data-lucide="trending-up"></i>
+                        <span>+0%</span>
+                    </div>
+                </div>
+                
+                <div class="card metric-card">
+                    <div class="metric-value" id="success-rate">0%</div>
+                    <div class="metric-label">Taxa de Sucesso</div>
+                    <div class="metric-change" id="success-change">
+                        <i data-lucide="target"></i>
+                        <span>Meta: 75%</span>
+                    </div>
+                </div>
+                
+                <div class="card metric-card">
+                    <div class="metric-value" id="total-pnl">$0.00</div>
+                    <div class="metric-label">P&L Total</div>
+                    <div class="metric-change" id="pnl-change">
+                        <i data-lucide="dollar-sign"></i>
+                        <span>+0%</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Dashboard Grid -->
+            <div class="grid grid-cols-2" style="margin-top: 2rem;">
+                <!-- Real-time Performance Chart -->
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <h3 class="card-title">
+                                <i data-lucide="trending-up"></i>
+                                Análise de Performance
+                            </h3>
+                            <p class="card-subtitle">Performance da carteira em tempo real</p>
+                        </div>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="performance-chart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Trading Signals -->
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <h3 class="card-title">
+                                <i data-lucide="activity"></i>
+                                Sinais de Trading
+                            </h3>
+                            <p class="card-subtitle">Últimos sinais do mercado</p>
+                        </div>
+                    </div>
+                    <div id="signals-container" class="loading" style="max-height: 300px; overflow-y: auto; padding: 0.5rem;">
+                        <div class="spinner"></div>
+                        <span style="margin-left: 1rem;">Carregando sinais...</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Advanced Features Grid -->
+            <div class="grid grid-cols-3" style="margin-top: 2rem;" id="enterprise-features" style="display: none;">
+                <!-- Risk Analysis -->
+                <div class="card feature-card">
+                    <div class="card-header">
+                        <h3 class="card-title">
+                            <i data-lucide="shield"></i>
+                            Análise de Risco
+                        </h3>
+                    </div>
+                    <div id="risk-analysis-content" class="loading">
+                        <div class="spinner"></div>
+                        <span style="margin-left: 1rem;">Analisando...</span>
+                    </div>
+                </div>
+
+                <!-- Market Sentiment -->
+                <div class="card feature-card">
+                    <div class="card-header">
+                        <h3 class="card-title">
+                            <i data-lucide="brain"></i>
+                            Sentimento do Mercado
+                        </h3>
+                    </div>
+                    <div id="sentiment-content" class="loading">
+                        <div class="spinner"></div>
+                        <span style="margin-left: 1rem;">Processando...</span>
+                    </div>
+                </div>
+
+                <!-- Portfolio Optimization -->
+                <div class="card feature-card">
+                    <div class="card-header">
+                        <h3 class="card-title">
+                            <i data-lucide="target"></i>
+                            Otimização
+                        </h3>
+                    </div>
+                    <div id="optimization-content" class="loading">
+                        <div class="spinner"></div>
+                        <span style="margin-left: 1rem;">Otimizando...</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Data Tables -->
+            <div class="grid grid-cols-1" style="margin-top: 2rem;">
+                <!-- Active Positions -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">
+                            <i data-lucide="layers"></i>
+                            Posições Ativas
+                        </h3>
+                    </div>
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Símbolo</th>
+                                    <th>Lado</th>
+                                    <th>Tamanho</th>
+                                    <th>Preço de Entrada</th>
+                                    <th>Preço Atual</th>
+                                    <th>P&L</th>
+                                    <th>Duração</th>
+                                </tr>
+                            </thead>
+                            <tbody id="positions-tbody">
+                                <tr>
+                                    <td colspan="7" style="text-align: center; color: var(--text-secondary); padding: 2rem;">
+                                        <i data-lucide="info" style="margin-bottom: 0.5rem;"></i>
+                                        <p>Nenhuma posição ativa. Execute trades para ver posições.</p>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // Global State Management
+        const state = {
+            isRunning: false,
+            lastUpdate: null,
+            charts: {},
+            updateInterval: null,
+            enterpriseVisible: false,
+            performanceData: []
+        };
+
+        // Initialize Lucide Icons
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+
+        // API Service
+        class ApiService {
+            static async request(endpoint, options = {}) {
+                try {
+                    const response = await fetch(endpoint, {
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...options.headers
+                        },
+                        ...options
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`API Error: ${response.status}`);
+                    }
+                    
+                    return await response.json();
+                } catch (error) {
+                    console.error('Falha na requisição da API:', error);
+                    throw error;
+                }
+            }
+
+            static async startDemo() {
+                return this.request('/demo/start', { 
+                    method: 'POST',
+                    body: JSON.stringify({
+                        duration: 300,
+                        symbols: null
+                    })
+                });
+            }
+
+            static async pauseDemo() {
+                return this.request('/demo/pause', { method: 'POST' });
+            }
+
+            static async resetDemo() {
+                return this.request('/demo/reset', { method: 'POST' });
+            }
+
+            static async getStatus() {
+                return this.request('/demo/status');
+            }
+
+            static async getMetrics() {
+                return this.request('/demo/metrics');
+            }
+
+            static async getTradingSignals() {
+                return this.request('/demo/trading-signals');
+            }
+
+            static async getRiskAnalysis() {
+                return this.request('/fantasma/analise-risco');
+            }
+
+            static async getMarketSentiment() {
+                return this.request('/fantasma/sentimento-mercado');
+            }
+
+            static async getPortfolioOptimization() {
+                return this.request('/enterprise/portfolio-optimization');
+            }
+        }
+
+        // Chart Management
+        function initializeCharts() {
+            // Verificar se Chart.js está disponível
+            if (typeof Chart === 'undefined') {
+                console.error('Chart.js não está carregado');
+                return;
+            }
+            
+            // Performance Chart
+            const performanceCtx = document.getElementById('performance-chart').getContext('2d');
+            state.charts.performance = new Chart(performanceCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Valor da Carteira',
+                        data: [],
+                        borderColor: 'rgb(0, 229, 255)',
+                        backgroundColor: 'rgba(0, 229, 255, 0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            },
+                            ticks: {
+                                color: '#b3b3b3'
+                            }
+                        },
+                        y: {
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            },
+                            ticks: {
+                                color: '#b3b3b3'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // UI Updates
+        function updateMetrics(data) {
+            const metrics = data.metrics || {};
+            const portfolio = data.portfolio_summary || {};
+            
+            // Update metric cards with animation
+            updateMetricCard('total-scans', metrics.total_scans || 0);
+            updateMetricCard('signals-generated', metrics.signals_generated || 0);
+            updateMetricCard('success-rate', `${metrics.success_rate || 0}%`);
+            updateMetricCard('total-pnl', `$${(portfolio.total_pnl || 0).toFixed(2)}`);
+            
+            // Update performance chart
+            updatePerformanceChart(portfolio.total_pnl || 0);
+        }
+
+        function updateMetricCard(id, value) {
+            const element = document.getElementById(id);
+            if (element && element.textContent !== value.toString()) {
+                element.style.transform = 'scale(1.1)';
+                element.textContent = value;
+                setTimeout(() => {
+                    element.style.transform = 'scale(1)';
+                }, 200);
+            }
+        }
+
+        function updatePerformanceChart(pnl) {
+            if (!state.charts.performance) {
+                return;
+            }
+            
+            const chart = state.charts.performance;
+            const now = new Date();
+            
+            // Add new data point
+            chart.data.labels.push(now.toLocaleTimeString());
+            chart.data.datasets[0].data.push(pnl);
+            
+            // Keep only last 20 points
+            if (chart.data.labels.length > 20) {
+                chart.data.labels.shift();
+                chart.data.datasets[0].data.shift();
+            }
+            
+            chart.update('none');
+        }
+
+        function updateStatus(isRunning) {
+            state.isRunning = isRunning;
+            const indicator = document.getElementById('status-indicator');
+            const statusText = document.getElementById('status-text');
+            
+            if (isRunning) {
+                indicator.className = 'status-indicator running';
+                statusText.textContent = 'Bot Executando';
+            } else {
+                indicator.className = 'status-indicator stopped';
+                statusText.textContent = 'Bot Parado';
+            }
+            
+            updateButtonStates();
+        }
+
+        function updateButtonStates() {
+            const startBtn = document.getElementById('start-btn');
+            const pauseBtn = document.getElementById('pause-btn');
+            const resetBtn = document.getElementById('reset-btn');
+            
+            startBtn.disabled = state.isRunning;
+            pauseBtn.disabled = !state.isRunning;
+            resetBtn.disabled = state.isRunning;
+        }
+
+        function updateTradingSignals(signals) {
+            const container = document.getElementById('signals-container');
+            
+            if (!signals || signals.length === 0) {
+                container.innerHTML = '<p style="text-align: center; color: var(--text-muted);">Nenhum sinal recente</p>';
+                return;
+            }
+            
+            container.innerHTML = signals.slice(-5).reverse().map(signal => {
+                const typeColor = signal.entry_type === 'PRIMARY' ? 'var(--accent-primary)' : 
+                                signal.entry_type === 'REENTRY' ? 'var(--success)' : 'var(--warning)';
+                
+                return `
+                    <div style="background: var(--bg-tertiary); padding: 1rem; border-radius: 12px; 
+                               margin-bottom: 0.75rem; border-left: 3px solid ${typeColor};
+                               transition: var(--transition-medium);" 
+                         class="slide-in">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <span style="font-weight: 600; color: ${typeColor};">
+                                    ${signal.symbol || 'N/A'}
+                                </span>
+                                <span style="margin-left: 0.5rem; font-size: 0.875rem; color: var(--text-secondary);">
+                                    ${signal.entry_type || 'SIGNAL'}
+                                </span>
+                            </div>
+                            <div style="text-align: right;">
+                                <div style="font-weight: 500;">$${(signal.price || 0).toFixed(4)}</div>
+                                <div style="font-size: 0.75rem; color: var(--text-muted);">
+                                    ${new Date(signal.timestamp).toLocaleTimeString()}
+                                </div>
+                            </div>
+                        </div>
+                        <div style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-secondary);">
+                            ${signal.reason || 'Sinal de análise do mercado'}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Enterprise Features
+        async function updateEnterpriseFeatures() {
+            if (!state.enterpriseVisible || !state.isRunning) return;
+            
+            try {
+                // Update Risk Analysis
+                const riskData = await ApiService.getRiskAnalysis();
+                updateRiskAnalysis(riskData);
+                
+                // Update Market Sentiment
+                const sentimentData = await ApiService.getMarketSentiment();
+                updateMarketSentiment(sentimentData);
+                
+                // Update Portfolio Optimization
+                const optimizationData = await ApiService.getPortfolioOptimization();
+                updatePortfolioOptimization(optimizationData);
+            } catch (error) {
+                console.error('Erro ao atualizar recursos enterprise:', error);
+            }
+        }
+
+        function updateRiskAnalysis(data) {
+            const container = document.getElementById('risk-analysis-content');
+            
+            if (data.status === 'erro') {
+                container.innerHTML = `
+                    <div style="text-align: center; color: var(--text-secondary); padding: 1rem;">
+                        <i data-lucide="info" style="margin-bottom: 0.5rem;"></i>
+                        <p style="font-size: 0.875rem;">${data.mensagem}</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            const analysis = data.analise_risco || {};
+            const riskMetrics = analysis.risk_metrics || {};
+            
+            container.innerHTML = `
+                <div class="risk-summary">
+                    <div style="display: flex; justify-content: between; margin-bottom: 1rem;">
+                        <span>VaR 95%:</span>
+                        <span class="text-danger">${(riskMetrics.var_95_percent || 0).toFixed(2)}%</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 1rem;">
+                        <span>Sharpe Ratio:</span>
+                        <span class="${riskMetrics.sharpe_ratio > 1 ? 'text-success' : 'text-warning'}">
+                            ${(riskMetrics.sharpe_ratio || 0).toFixed(2)}
+                        </span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span>Max Drawdown:</span>
+                        <span class="text-danger">${(riskMetrics.max_drawdown_percent || 0).toFixed(2)}%</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        function updateMarketSentiment(data) {
+            const container = document.getElementById('sentiment-content');
+            
+            if (data.status === 'erro') {
+                container.innerHTML = `
+                    <div style="text-align: center; color: var(--text-secondary); padding: 1rem;">
+                        <i data-lucide="info" style="margin-bottom: 0.5rem;"></i>
+                        <p style="font-size: 0.875rem;">${data.mensagem}</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            const sentiment = data.analise_sentimento || {};
+            
+            const fearGreedColor = sentiment.fear_greed_index > 70 ? 'var(--success)' :
+                                  sentiment.fear_greed_index < 30 ? 'var(--danger)' : 'var(--warning)';
+            
+            container.innerHTML = `
+                <div class="sentiment-summary">
+                    <div style="text-align: center; margin-bottom: 1rem;">
+                        <div style="font-size: 2rem; font-weight: 700; color: ${fearGreedColor};">
+                            ${sentiment.fear_greed_index || 50}
+                        </div>
+                        <div style="color: var(--text-secondary); font-size: 0.875rem;">
+                            Fear & Greed Index
+                        </div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                        <span>Regime do Mercado:</span>
+                        <span class="risk-indicator ${sentiment.market_regime === 'BULL' ? 'risk-low' : 
+                                                      sentiment.market_regime === 'BEAR' ? 'risk-high' : 'risk-medium'}">
+                            ${sentiment.market_regime || 'NORMAL'}
+                        </span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span>Confiança:</span>
+                        <span>${Math.round((sentiment.confidence || 0) * 100)}%</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        function updatePortfolioOptimization(data) {
+            const container = document.getElementById('optimization-content');
+            
+            if (data.status === 'error') {
+                container.innerHTML = `
+                    <div style="text-align: center; color: var(--text-secondary); padding: 1rem;">
+                        <i data-lucide="info" style="margin-bottom: 0.5rem;"></i>
+                        <p style="font-size: 0.875rem;">${data.message}</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            const optimization = data.portfolio_optimization || {};
+            
+            container.innerHTML = `
+                <div class="optimization-summary">
+                    <div style="margin-bottom: 1rem;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                            <span>Rebalanceamento:</span>
+                            <span class="${optimization.rebalancing_needed ? 'text-warning' : 'text-success'}">
+                                ${optimization.rebalancing_needed ? 'Necessário' : 'Balanceado'}
+                            </span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between;">
+                            <span>Nível de Risco:</span>
+                            <span class="risk-indicator ${optimization.risk_adjustment === 'REDUCE' ? 'risk-high' : 'risk-low'}">
+                                ${optimization.risk_adjustment || 'MANTER'}
+                            </span>
+                        </div>
+                    </div>
+                    <div style="font-size: 0.875rem; color: var(--text-secondary);">
+                        ${optimization.recommended_actions?.length || 0} recomendações disponíveis
+                    </div>
+                </div>
+            `;
+        }
+
+        // Main Update Loop
+        async function updateDashboard() {
+            try {
+                const statusData = await ApiService.getStatus();
+                updateStatus(statusData.is_running);
+                
+                if (statusData.is_running) {
+                    updateMetrics(statusData);
+                    
+                    // Update trading signals
+                    const signalsData = await ApiService.getTradingSignals();
+                    updateTradingSignals(signalsData.trading_signals);
+                    
+                    // Update enterprise features if visible
+                    await updateEnterpriseFeatures();
+                }
+                
+                state.lastUpdate = new Date();
+            } catch (error) {
+                console.error('Falha na atualização do dashboard:', error);
+            }
+        }
+
+        // Event Handlers
+        function setupEventHandlers() {
+            // Control buttons
+            document.getElementById('start-btn').addEventListener('click', async () => {
+                try {
+                    await ApiService.startDemo();
+                    await updateDashboard();
+                } catch (error) {
+                    console.error('Falha ao iniciar demo:', error);
+                }
+            });
+
+            document.getElementById('pause-btn').addEventListener('click', async () => {
+                try {
+                    await ApiService.pauseDemo();
+                    await updateDashboard();
+                } catch (error) {
+                    console.error('Falha ao pausar demo:', error);
+                }
+            });
+
+            document.getElementById('reset-btn').addEventListener('click', async () => {
+                try {
+                    await ApiService.resetDemo();
+                    await updateDashboard();
+                    
+                    // Clear charts
+                    if (state.charts.performance) {
+                        state.charts.performance.data.labels = [];
+                        state.charts.performance.data.datasets[0].data = [];
+                        state.charts.performance.update();
+                    }
+                } catch (error) {
+                    console.error('Falha ao reiniciar demo:', error);
+                }
+            });
+
+            // Enterprise features toggle
+            document.getElementById('enterprise-btn').addEventListener('click', () => {
+                const features = document.getElementById('enterprise-features');
+                state.enterpriseVisible = !state.enterpriseVisible;
+                
+                if (state.enterpriseVisible) {
+                    features.style.display = 'grid';
+                    features.classList.add('fade-in');
+                    updateEnterpriseFeatures();
+                } else {
+                    features.style.display = 'none';
+                }
+            });
+        }
+
+        // Initialization
+        async function initialize() {
+            // Initialize charts
+            initializeCharts();
+            
+            // Setup event handlers
+            setupEventHandlers();
+            
+            // Initial dashboard update
+            await updateDashboard();
+            
+            // Start update interval
+            state.updateInterval = setInterval(updateDashboard, 2000);
+            
+            console.log('Dashboard FANTASMA inicializado com sucesso');
+        }
+
+        // Start the application
+        document.addEventListener('DOMContentLoaded', initialize);
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (state.updateInterval) {
+                clearInterval(state.updateInterval);
+            }
+        });
+    </script>
+</body>
+</html>

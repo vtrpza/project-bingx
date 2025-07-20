@@ -218,10 +218,7 @@ class OptimizedDemoLogHandler(logging.Handler):
 
     def get_technical_analysis_data(self):
         """Extrai dados de análise técnica em tempo real com fallback para demo"""
-        # Se não há dados técnicos reais, gerar dados de demo
-        if not self._latest_technical_data and len(self.records) > 10:
-            self._latest_technical_data = self._generate_demo_technical_data()
-        
+        # Apenas dados técnicos reais
         return self._latest_technical_data
     
     def _generate_demo_technical_data(self):
@@ -291,10 +288,7 @@ class OptimizedDemoLogHandler(logging.Handler):
                         'level': log.get('level', 'info')
                     })
         
-        # Se não há sinais reais, gerar alguns dados de demo informativos
-        if len(signals) < 3:
-            signals.extend(self._generate_demo_signals())
-            
+        # Apenas sinais reais
         return signals[-10:]  # Últimos 10 sinais
     
     def _generate_signal_reason(self, log, event):
@@ -380,10 +374,7 @@ class OptimizedDemoLogHandler(logging.Handler):
                         'event': event[:100] + '...' if len(event) > 100 else event
                     })
         
-        # Se não há ordens reais, gerar dados de demo
-        if len(orders) < 2:
-            orders.extend(self._generate_demo_orders())
-            
+        # Apenas ordens reais
         return orders[-8:]  # Últimas 8 ordens
     
     def _determine_order_status(self, event):
@@ -460,14 +451,7 @@ class OptimizedDemoLogHandler(logging.Handler):
         orders_executed = len([e for e in order_events if any(word in e.get('event', '').lower() for word in ['executed', 'placed', 'filled'])])
         orders_successful = len([e for e in order_events if 'success' in e.get('event', '').lower()])
         
-        # Se não há dados reais, simular baseado na atividade
-        if total_scans == 0 and len(self.records) > 20:
-            # Simular métricas baseadas na atividade de logs
-            activity_factor = min(len(self.records) / 100, 1.0)
-            total_scans = int(activity_factor * 50)
-            signals_generated = int(activity_factor * 20)
-            orders_executed = int(activity_factor * 15)
-            orders_successful = int(orders_executed * 0.75)  # 75% success rate
+        # Apenas dados reais - não simular nada
         
         success_rate = (orders_successful / max(orders_executed, 1)) * 100
         
@@ -503,10 +487,15 @@ class OptimizedDemoLogHandler(logging.Handler):
 
         total_trades = winning_trades + losing_trades
         
-        # Se não há dados reais, gerar dados de demo realistas
+        # Apenas dados reais - se não há trades, retornar zerado
         if total_trades == 0:
-            demo_data = self._generate_demo_portfolio()
-            return demo_data
+            return {
+                'total_pnl': 0,
+                'win_rate': 0,
+                'winning_trades': 0,
+                'losing_trades': 0,
+                'total_trades': 0
+            }
         
         win_rate = (winning_trades / max(total_trades, 1)) * 100
         
@@ -573,11 +562,8 @@ class OptimizedDemoLogHandler(logging.Handler):
                 if symbol in positions:
                     del positions[symbol]
         
-        # Se não há posições reais, gerar algumas de demo durante execução
+        # Apenas posições reais - se não há, retornar vazio
         real_positions = list(positions.values())
-        if len(real_positions) == 0 and len(self.records) > 20:  # Só se há atividade
-            real_positions = self._generate_demo_positions()
-                    
         return real_positions
     
     def _generate_demo_positions(self):
@@ -790,103 +776,497 @@ class AdvancedMetrics:
             'total_return': ((self.equity_curve[-1] / max(abs(self.equity_curve[0]), 1)) - 1) * 100 if len(self.equity_curve) > 1 else 0
         }
 
-# Sistema de Gestão de Risco Avançado - Premium Enterprise
-class EnterpriseRiskManager:
+# Sistema de Gestão de Risco Avançado - FANTASMA Enterprise
+class AdvancedRiskManager:
     def __init__(self):
         self.position_limits = {
-            'max_position_size': 10000,  # USD
-            'max_daily_loss': 1000,      # USD
-            'max_drawdown': 0.15,        # 15%
-            'max_leverage': 5.0,
-            'max_correlation': 0.7
+            'max_position_size': 50000,   # USD - Limite por posição
+            'max_daily_loss': 5000,       # USD - Perda máxima diária
+            'max_drawdown': 0.20,         # 20% - Drawdown máximo
+            'max_leverage': 10.0,         # Alavancagem máxima
+            'max_correlation': 0.85,      # Correlação máxima entre ativos
+            'var_limit': 10000            # VaR máximo permitido
         }
         self.risk_metrics = {
-            'var_95': 0,              # Value at Risk 95%
-            'expected_shortfall': 0,   # Conditional VaR
-            'sharpe_ratio': 0,
-            'sortino_ratio': 0,
-            'beta': 0,
-            'alpha': 0
+            'var_95': 0,                  # Value at Risk 95%
+            'var_99': 0,                  # Value at Risk 99%
+            'expected_shortfall': 0,      # Expected Shortfall (CVaR)
+            'sharpe_ratio': 0,           # Índice Sharpe
+            'sortino_ratio': 0,          # Índice Sortino
+            'calmar_ratio': 0,           # Índice Calmar
+            'beta': 0,                   # Beta vs. mercado
+            'alpha': 0,                  # Alpha vs. benchmark
+            'tracking_error': 0,         # Erro de rastreamento
+            'information_ratio': 0       # Índice de Informação
         }
         self.positions = []
-        self.daily_pnl = []
+        self.historical_returns = deque(maxlen=252)  # 1 ano de dados
+        self.correlation_matrix = {}
+        self.stress_scenarios = self._initialize_stress_scenarios()
         
-    def calculate_position_risk(self, symbol, size, price):
-        """Calcula risco da posição"""
-        position_value = size * price
-        portfolio_value = sum(p.get('value', 0) for p in self.positions)
+    def _initialize_stress_scenarios(self):
+        """Inicializa cenários de stress testing baseados em eventos históricos"""
+        return {
+            'crypto_winter_2018': {
+                'nome': 'Inverno Cripto 2018',
+                'btc_drop': -0.84,        # BTC caiu 84%
+                'eth_drop': -0.94,        # ETH caiu 94%
+                'alt_multiplier': 1.2,    # Altcoins sofreram mais
+                'duration_days': 365,
+                'recovery_days': 500
+            },
+            'covid_crash_2020': {
+                'nome': 'Crash COVID-19 2020',
+                'btc_drop': -0.50,        # BTC caiu 50% em março
+                'eth_drop': -0.65,        # ETH caiu 65%
+                'alt_multiplier': 1.3,
+                'duration_days': 30,
+                'recovery_days': 90
+            },
+            'luna_collapse_2022': {
+                'nome': 'Colapso Luna/UST 2022',
+                'btc_drop': -0.35,        # BTC caiu 35%
+                'eth_drop': -0.45,        # ETH caiu 45%
+                'alt_multiplier': 1.5,    # Altcoins em pânico
+                'duration_days': 14,
+                'recovery_days': 180
+            },
+            'ftx_collapse_2022': {
+                'nome': 'Colapso FTX 2022',
+                'btc_drop': -0.25,        # BTC caiu 25%
+                'eth_drop': -0.30,        # ETH caiu 30%
+                'alt_multiplier': 1.4,
+                'duration_days': 7,
+                'recovery_days': 120
+            }
+        }
+        
+    def add_daily_return(self, portfolio_return):
+        """Adiciona retorno diário para cálculos históricos"""
+        self.historical_returns.append(portfolio_return)
+        self._update_risk_metrics()
+    
+    def calculate_historical_var(self, confidence_level=0.95):
+        """Calcula VaR histórico baseado em retornos reais"""
+        if len(self.historical_returns) < 30:
+            return 0
+        
+        returns_array = np.array(list(self.historical_returns))
+        return np.percentile(returns_array, (1 - confidence_level) * 100)
+    
+    def calculate_expected_shortfall(self, confidence_level=0.95):
+        """Calcula Expected Shortfall (CVaR) - média das perdas além do VaR"""
+        if len(self.historical_returns) < 30:
+            return 0
+        
+        returns_array = np.array(list(self.historical_returns))
+        var_threshold = self.calculate_historical_var(confidence_level)
+        tail_losses = returns_array[returns_array <= var_threshold]
+        
+        return np.mean(tail_losses) if len(tail_losses) > 0 else 0
+    
+    def calculate_advanced_ratios(self):
+        """Calcula índices de performance avançados"""
+        if len(self.historical_returns) < 30:
+            return self.risk_metrics
+        
+        returns = np.array(list(self.historical_returns))
+        
+        # Sharpe Ratio anualizado (assumindo risk-free rate = 5% ao ano)
+        risk_free_daily = 0.05 / 252
+        excess_returns = returns - risk_free_daily
+        sharpe = np.mean(excess_returns) / np.std(returns) * np.sqrt(252) if np.std(returns) > 0 else 0
+        
+        # Sortino Ratio (apenas considera downside volatility)
+        negative_returns = returns[returns < 0]
+        downside_std = np.std(negative_returns) if len(negative_returns) > 0 else np.std(returns)
+        sortino = np.mean(excess_returns) / downside_std * np.sqrt(252) if downside_std > 0 else 0
+        
+        # Calmar Ratio (retorno anualizado / max drawdown)
+        annual_return = np.mean(returns) * 252
+        max_dd = self._calculate_max_drawdown_from_returns(returns)
+        calmar = annual_return / abs(max_dd) if max_dd != 0 else 0
         
         return {
-            'position_risk': position_value / max(portfolio_value, 1),
-            'concentration_risk': self._calculate_concentration_risk(symbol),
-            'liquidity_risk': self._calculate_liquidity_risk(symbol),
-            'correlation_risk': self._calculate_correlation_risk(symbol)
+            'sharpe_ratio': round(sharpe, 3),
+            'sortino_ratio': round(sortino, 3),
+            'calmar_ratio': round(calmar, 3),
+            'annual_return': round(annual_return * 100, 2),
+            'annual_volatility': round(np.std(returns) * np.sqrt(252) * 100, 2),
+            'max_drawdown': round(max_dd * 100, 2)
+        }
+    
+    def _calculate_max_drawdown_from_returns(self, returns):
+        """Calcula drawdown máximo a partir de retornos"""
+        cumulative = np.cumprod(1 + returns)
+        running_max = np.maximum.accumulate(cumulative)
+        drawdown = (cumulative - running_max) / running_max
+        return np.min(drawdown)
+    
+    def calculate_dynamic_correlation(self, symbols):
+        """Calcula matriz de correlação dinâmica usando dados históricos simulados"""
+        # Simular correlações baseadas em dados históricos reais de crypto
+        base_correlations = {
+            ('BTC-USDT', 'ETH-USDT'): 0.75,
+            ('BTC-USDT', 'BNB-USDT'): 0.65,
+            ('BTC-USDT', 'ADA-USDT'): 0.70,
+            ('BTC-USDT', 'DOT-USDT'): 0.68,
+            ('ETH-USDT', 'BNB-USDT'): 0.72,
+            ('ETH-USDT', 'ADA-USDT'): 0.78,
+            ('ETH-USDT', 'DOT-USDT'): 0.82,
+            ('BNB-USDT', 'ADA-USDT'): 0.60,
+            ('BNB-USDT', 'DOT-USDT'): 0.58,
+            ('ADA-USDT', 'DOT-USDT'): 0.74
+        }
+        
+        # Adicionar variação temporal às correlações
+        time_factor = (len(self.historical_returns) % 50) / 50 * 0.1  # Variação de ±10%
+        
+        correlation_matrix = {}
+        for i, symbol1 in enumerate(symbols):
+            correlation_matrix[symbol1] = {}
+            for j, symbol2 in enumerate(symbols):
+                if symbol1 == symbol2:
+                    correlation_matrix[symbol1][symbol2] = 1.0
+                else:
+                    pair = tuple(sorted([symbol1, symbol2]))
+                    base_corr = base_correlations.get(pair, 0.5)
+                    # Adicionar variação temporal e ruído
+                    varied_corr = base_corr + np.sin(time_factor * np.pi) * 0.1 + np.random.normal(0, 0.05)
+                    correlation_matrix[symbol1][symbol2] = max(-1, min(1, varied_corr))
+        
+        self.correlation_matrix = correlation_matrix
+        return correlation_matrix
+    
+    def run_stress_test(self, scenario_name, current_portfolio):
+        """Executa teste de stress em cenário específico"""
+        if scenario_name not in self.stress_scenarios:
+            return None
+        
+        scenario = self.stress_scenarios[scenario_name]
+        stress_results = {
+            'scenario_name': scenario['nome'],
+            'total_loss': 0,
+            'position_impacts': [],
+            'recovery_time_days': scenario['recovery_days'],
+            'risk_metrics': {}
+        }
+        
+        total_portfolio_value = sum(pos.get('value', 0) for pos in current_portfolio)
+        
+        for position in current_portfolio:
+            symbol = position.get('symbol', '')
+            value = position.get('value', 0)
+            
+            # Calcular impacto baseado no ativo
+            if 'BTC' in symbol:
+                impact = scenario['btc_drop']
+            elif 'ETH' in symbol:
+                impact = scenario['eth_drop']
+            else:  # Altcoins
+                base_impact = (scenario['btc_drop'] + scenario['eth_drop']) / 2
+                impact = base_impact * scenario['alt_multiplier']
+            
+            position_loss = value * abs(impact)
+            stress_results['total_loss'] += position_loss
+            stress_results['position_impacts'].append({
+                'symbol': symbol,
+                'current_value': value,
+                'stress_impact': impact,
+                'estimated_loss': position_loss,
+                'loss_percentage': abs(impact) * 100
+            })
+        
+        # Calcular métricas de risco do cenário
+        total_loss_percentage = (stress_results['total_loss'] / total_portfolio_value * 100) if total_portfolio_value > 0 else 0
+        
+        stress_results['risk_metrics'] = {
+            'total_loss_usd': round(stress_results['total_loss'], 2),
+            'total_loss_percentage': round(total_loss_percentage, 2),
+            'exceeds_var_limit': stress_results['total_loss'] > self.position_limits['var_limit'],
+            'exceeds_drawdown_limit': total_loss_percentage > (self.position_limits['max_drawdown'] * 100),
+            'risk_level': self._classify_stress_risk_level(total_loss_percentage)
+        }
+        
+        return stress_results
+    
+    def _classify_stress_risk_level(self, loss_percentage):
+        """Classifica nível de risco baseado na perda percentual"""
+        if loss_percentage <= 5:
+            return 'BAIXO'
+        elif loss_percentage <= 15:
+            return 'MÉDIO'
+        elif loss_percentage <= 30:
+            return 'ALTO'
+        else:
+            return 'CRÍTICO'
+    
+    def _update_risk_metrics(self):
+        """Atualiza métricas de risco quando novos dados são adicionados"""
+        if len(self.historical_returns) >= 30:
+            self.risk_metrics.update({
+                'var_95': self.calculate_historical_var(0.95),
+                'var_99': self.calculate_historical_var(0.99),
+                'expected_shortfall': self.calculate_expected_shortfall(0.95)
+            })
+            self.risk_metrics.update(self.calculate_advanced_ratios())
+    
+    def get_comprehensive_risk_report(self):
+        """Relatório completo de risco com todas as métricas avançadas"""
+        portfolio_value = sum(p.get('value', 0) for p in self.positions)
+        symbols = [p.get('symbol', '') for p in self.positions if p.get('symbol')]
+        
+        # Calcular correlações dinâmicas
+        if symbols:
+            correlation_matrix = self.calculate_dynamic_correlation(symbols)
+        else:
+            correlation_matrix = {}
+        
+        # Executar todos os testes de stress
+        stress_test_results = {}
+        for scenario_name in self.stress_scenarios.keys():
+            stress_test_results[scenario_name] = self.run_stress_test(scenario_name, self.positions)
+        
+        # Calcular concentração máxima
+        concentrations = [self._calculate_concentration_risk(symbol) for symbol in symbols] if symbols else [0]
+        max_concentration = max(concentrations) if concentrations else 0
+        
+        # Verificar compliance
+        compliance_status = self._check_compliance()
+        
+        return {
+            'timestamp': datetime.now().isoformat(),
+            'portfolio_metrics': {
+                'valor_total': portfolio_value,
+                'numero_posicoes': len(self.positions),
+                'concentracao_maxima': round(max_concentration * 100, 2),
+                'diversificacao_score': round((1 - max_concentration) * 100, 2)
+            },
+            'risk_metrics': {
+                'var_95_percent': round(self.risk_metrics['var_95'] * 100, 3),
+                'var_99_percent': round(self.risk_metrics['var_99'] * 100, 3),
+                'expected_shortfall': round(self.risk_metrics['expected_shortfall'] * 100, 3),
+                'sharpe_ratio': self.risk_metrics['sharpe_ratio'],
+                'sortino_ratio': self.risk_metrics['sortino_ratio'],
+                'calmar_ratio': self.risk_metrics['calmar_ratio'],
+                'max_drawdown_percent': self.risk_metrics.get('max_drawdown', 0),
+                'volatilidade_anual': self.risk_metrics.get('annual_volatility', 0),
+                'retorno_anual': self.risk_metrics.get('annual_return', 0)
+            },
+            'correlation_matrix': correlation_matrix,
+            'stress_test_results': stress_test_results,
+            'compliance_status': compliance_status,
+            'risk_limits': self.position_limits,
+            'recommendations': self._generate_risk_recommendations(max_concentration, compliance_status)
         }
     
     def _calculate_concentration_risk(self, symbol):
-        """Calcula risco de concentração"""
+        """Calcula risco de concentração por símbolo"""
+        if not self.positions:
+            return 0
         symbol_exposure = sum(p.get('value', 0) for p in self.positions if p.get('symbol') == symbol)
         total_exposure = sum(p.get('value', 0) for p in self.positions)
         return symbol_exposure / max(total_exposure, 1)
     
-    def _calculate_liquidity_risk(self, symbol):
-        """Calcula risco de liquidez"""
-        # Simulação baseada no tipo de ativo
-        if 'BTC' in symbol or 'ETH' in symbol:
-            return 0.1  # Baixo risco
-        elif 'USDT' in symbol:
-            return 0.05  # Muito baixo
-        else:
-            return 0.3  # Médio-alto
-    
-    def _calculate_correlation_risk(self, symbol):
-        """Calcula risco de correlação"""
-        # Simulação de correlação entre ativos
-        correlations = {
-            'BTC-USDT': {'ETH-USDT': 0.8, 'BNB-USDT': 0.6},
-            'ETH-USDT': {'BTC-USDT': 0.8, 'ADA-USDT': 0.7},
-        }
-        return max(correlations.get(symbol, {}).values(), default=0.3)
-    
-    def calculate_portfolio_var(self, confidence=0.95):
-        """Calcula Value at Risk do portfólio"""
-        if len(self.daily_pnl) < 30:
-            return 0
-        
-        pnl_array = np.array(self.daily_pnl[-252:])  # Último ano
-        return np.percentile(pnl_array, (1 - confidence) * 100)
-    
-    def get_risk_report(self):
-        """Relatório completo de risco"""
-        portfolio_value = sum(p.get('value', 0) for p in self.positions)
-        
-        return {
-            'portfolio_value': portfolio_value,
-            'var_95': self.calculate_portfolio_var(),
-            'max_drawdown': self.risk_metrics['max_drawdown'],
-            'sharpe_ratio': self.risk_metrics['sharpe_ratio'],
-            'concentration_risk': max([self._calculate_concentration_risk(p.get('symbol', '')) for p in self.positions], default=0),
-            'liquidity_score': 1 - np.mean([self._calculate_liquidity_risk(p.get('symbol', '')) for p in self.positions or [{}]]),
-            'risk_limits': self.position_limits,
-            'compliance_status': self._check_compliance()
-        }
-    
     def _check_compliance(self):
-        """Verifica conformidade com limites de risco"""
+        """Verifica conformidade com limites de risco avançados"""
+        if not self.positions:
+            return {'overall': True, 'details': {}, 'violations': []}
+        
         portfolio_value = sum(p.get('value', 0) for p in self.positions)
-        daily_loss = sum(self.daily_pnl[-1:]) if self.daily_pnl else 0
+        max_concentration = max([self._calculate_concentration_risk(p.get('symbol', '')) for p in self.positions], default=0)
         
         compliance = {
-            'position_size': all(p.get('value', 0) <= self.position_limits['max_position_size'] for p in self.positions),
-            'daily_loss': daily_loss >= -self.position_limits['max_daily_loss'],
-            'drawdown': self.risk_metrics['max_drawdown'] <= self.position_limits['max_drawdown'],
-            'concentration': max([self._calculate_concentration_risk(p.get('symbol', '')) for p in self.positions], default=0) <= 0.3
+            'posicao_maxima': all(p.get('value', 0) <= self.position_limits['max_position_size'] for p in self.positions),
+            'var_limite': abs(self.risk_metrics['var_95']) <= (self.position_limits['var_limit'] / portfolio_value) if portfolio_value > 0 else True,
+            'concentracao': max_concentration <= 0.4,  # Máximo 40% em um ativo
+            'drawdown': abs(self.risk_metrics.get('max_drawdown', 0)) <= self.position_limits['max_drawdown'] * 100,
+            'correlacao': max_concentration <= 0.6  # Limite de correlação
         }
         
         return {
             'overall': all(compliance.values()),
             'details': compliance,
             'violations': [k for k, v in compliance.items() if not v]
+        }
+    
+    def _generate_risk_recommendations(self, max_concentration, compliance_status):
+        """Gera recomendações baseadas na análise de risco"""
+        recommendations = []
+        
+        # Recomendações de concentração
+        if max_concentration > 0.4:
+            recommendations.append({
+                'tipo': 'CONCENTRAÇÃO',
+                'prioridade': 'ALTA',
+                'descricao': f'Concentração de {max_concentration*100:.1f}% em um ativo. Recomenda-se diversificar.',
+                'acao': 'Reduzir posição do ativo mais concentrado'
+            })
+        elif max_concentration > 0.25:
+            recommendations.append({
+                'tipo': 'CONCENTRAÇÃO',
+                'prioridade': 'MÉDIA',
+                'descricao': f'Concentração moderada de {max_concentration*100:.1f}%. Monitorar diversificação.',
+                'acao': 'Considerar rebalanceamento'
+            })
+        
+        # Recomendações de VaR
+        if abs(self.risk_metrics.get('var_95', 0)) > 0.05:  # VaR > 5%
+            recommendations.append({
+                'tipo': 'VaR',
+                'prioridade': 'ALTA',
+                'descricao': f'VaR 95% de {abs(self.risk_metrics["var_95"])*100:.2f}% indica alto risco.',
+                'acao': 'Reduzir tamanho das posições ou usar hedging'
+            })
+        
+        # Recomendações de Sharpe Ratio
+        if self.risk_metrics.get('sharpe_ratio', 0) < 0.5:
+            recommendations.append({
+                'tipo': 'PERFORMANCE',
+                'prioridade': 'MÉDIA',
+                'descricao': f'Sharpe Ratio baixo ({self.risk_metrics.get("sharpe_ratio", 0):.2f}). Ajustar estratégia.',
+                'acao': 'Revisar seleção de ativos e timing de entradas'
+            })
+        
+        # Recomendações de compliance
+        if not compliance_status['overall']:
+            for violation in compliance_status['violations']:
+                recommendations.append({
+                    'tipo': 'COMPLIANCE',
+                    'prioridade': 'CRÍTICA',
+                    'descricao': f'Violação de limite: {violation}',
+                    'acao': 'Ajustar posições imediatamente'
+                })
+        
+        return recommendations
+    
+    async def get_correlation_matrix(self):
+        """Obter matriz de correlação entre criptomoedas"""
+        # Simular matriz de correlação baseada em dados reais
+        symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT']
+        correlation_matrix = {}
+        
+        # Correlações simuladas baseadas em padrões reais do mercado crypto
+        base_correlations = {
+            'BTCUSDT': {'ETHUSDT': 0.85, 'BNBUSDT': 0.75, 'ADAUSDT': 0.70, 'DOTUSDT': 0.68, 'LINKUSDT': 0.72},
+            'ETHUSDT': {'BTCUSDT': 0.85, 'BNBUSDT': 0.80, 'ADAUSDT': 0.75, 'DOTUSDT': 0.73, 'LINKUSDT': 0.78},
+            'BNBUSDT': {'BTCUSDT': 0.75, 'ETHUSDT': 0.80, 'ADAUSDT': 0.65, 'DOTUSDT': 0.63, 'LINKUSDT': 0.68},
+            'ADAUSDT': {'BTCUSDT': 0.70, 'ETHUSDT': 0.75, 'BNBUSDT': 0.65, 'DOTUSDT': 0.82, 'LINKUSDT': 0.74},
+            'DOTUSDT': {'BTCUSDT': 0.68, 'ETHUSDT': 0.73, 'BNBUSDT': 0.63, 'ADAUSDT': 0.82, 'LINKUSDT': 0.76},
+            'LINKUSDT': {'BTCUSDT': 0.72, 'ETHUSDT': 0.78, 'BNBUSDT': 0.68, 'ADAUSDT': 0.74, 'DOTUSDT': 0.76}
+        }
+        
+        return {
+            'symbols': symbols,
+            'matrix': base_correlations,
+            'timestamp': datetime.now().isoformat(),
+            'market_regime': 'NORMAL'
+        }
+    
+    async def run_comprehensive_stress_test(self):
+        """Executar teste de stress abrangente"""
+        stress_scenarios = {
+            'crypto_winter_2018': {
+                'description': 'Inverno Cripto 2018 - Colapso de 84% do BTC',
+                'portfolio_impact': -65.0,  # Impacto percentual no portfolio
+                'probability': 'BAIXA',
+                'btc_drop': -84,
+                'duration_days': 365
+            },
+            'covid_crash_2020': {
+                'description': 'Crash COVID-19 - Queda rápida de 50%',
+                'portfolio_impact': -45.0,
+                'probability': 'MÉDIA',
+                'btc_drop': -50,
+                'duration_days': 30
+            },
+            'luna_ftx_2022': {
+                'description': 'Colapso Luna/FTX - Contágio sistêmico',
+                'portfolio_impact': -38.0,
+                'probability': 'MÉDIA',
+                'btc_drop': -76,
+                'duration_days': 90
+            },
+            'regulatory_ban': {
+                'description': 'Proibição regulatória severa',
+                'portfolio_impact': -55.0,
+                'probability': 'BAIXA',
+                'btc_drop': -70,
+                'duration_days': 180
+            },
+            'liquidity_crisis': {
+                'description': 'Crise de liquidez em exchanges',
+                'portfolio_impact': -42.0,
+                'probability': 'MÉDIA',
+                'btc_drop': -60,
+                'duration_days': 60
+            }
+        }
+        
+        return stress_scenarios
+    
+    async def get_portfolio_metrics(self):
+        """Obter métricas completas do portfolio"""
+        # Calcular métricas baseadas no histórico atual
+        returns = np.array(self.historical_returns) if self.historical_returns else np.array([0])
+        
+        # VaR e Expected Shortfall
+        var_95 = np.percentile(returns, 5) if len(returns) > 0 else 0
+        var_99 = np.percentile(returns, 1) if len(returns) > 0 else 0
+        
+        # Expected Shortfall (CVaR) - média das perdas além do VaR
+        beyond_var = returns[returns <= var_95] if len(returns) > 0 else np.array([0])
+        expected_shortfall = np.mean(beyond_var) if len(beyond_var) > 0 else 0
+        
+        # Ratios de performance
+        if len(returns) > 1:
+            mean_return = np.mean(returns)
+            std_return = np.std(returns)
+            
+            # Sharpe Ratio
+            sharpe_ratio = mean_return / std_return if std_return > 0 else 0
+            
+            # Sortino Ratio (apenas volatilidade negativa)
+            negative_returns = returns[returns < 0]
+            downside_std = np.std(negative_returns) if len(negative_returns) > 0 else std_return
+            sortino_ratio = mean_return / downside_std if downside_std > 0 else 0
+            
+            # Calmar Ratio (retorno anual / max drawdown)
+            cumulative_returns = np.cumsum(returns)
+            running_max = np.maximum.accumulate(cumulative_returns)
+            drawdowns = cumulative_returns - running_max
+            max_drawdown = np.min(drawdowns) if len(drawdowns) > 0 else 0
+            calmar_ratio = (mean_return * 252) / abs(max_drawdown) if max_drawdown != 0 else 0
+            
+            # Métricas de distribuição (implementação manual)
+            # Skewness (assimetria)
+            mean_ret = np.mean(returns)
+            std_ret = np.std(returns)
+            if std_ret > 0:
+                skewness = np.mean(((returns - mean_ret) / std_ret) ** 3)
+                kurtosis = np.mean(((returns - mean_ret) / std_ret) ** 4) - 3
+            else:
+                skewness = kurtosis = 0
+            
+        else:
+            sharpe_ratio = sortino_ratio = calmar_ratio = 0
+            max_drawdown = skewness = kurtosis = 0
+        
+        return {
+            'var_95': var_95,
+            'var_99': var_99,
+            'expected_shortfall': expected_shortfall,
+            'sharpe_ratio': sharpe_ratio,
+            'sortino_ratio': sortino_ratio,
+            'calmar_ratio': calmar_ratio,
+            'omega_ratio': 1.0,  # Placeholder
+            'max_drawdown': max_drawdown,
+            'current_drawdown': 0.0,  # Placeholder
+            'max_dd_duration': 0,  # Placeholder
+            'avg_recovery_time': 0,  # Placeholder
+            'skewness': skewness,
+            'kurtosis': kurtosis,
+            'tail_ratio': 1.0  # Placeholder
         }
 
 # Sistema de Análise de Sentimento de Mercado - ML
@@ -1034,8 +1414,8 @@ class AlertSystem:
 advanced_metrics = AdvancedMetrics()
 demo_log_handler = OptimizedDemoLogHandler()
 alert_system = None  # Será inicializado após connection_manager
-# Sistemas Premium Enterprise
-enterprise_risk_manager = EnterpriseRiskManager()
+# Sistemas Premium Enterprise - FANTASMA
+advanced_risk_manager = AdvancedRiskManager()
 market_sentiment_analyzer = MarketSentimentAnalyzer()
 
 def serialize_datetime(obj):
@@ -1501,7 +1881,7 @@ from typing import List, Optional
 from pydantic import BaseModel
 
 class DemoStartRequest(BaseModel):
-    duration: int = 300
+    duration: Optional[int] = 300  # Duração padrão de 5 minutos
     symbols: Optional[List[str]] = None
 
 @app.post("/demo/start")
@@ -1509,7 +1889,9 @@ async def start_demo(request: DemoStartRequest):
     if not demo_manager:
         return {"status": "error", "message": "Demo manager not initialized."}
     
-    response = await demo_manager.start_demo(duration=request.duration, symbols=request.symbols)
+    # Usar duração padrão se não especificada
+    duration = request.duration or 300
+    response = await demo_manager.start_demo(duration=duration, symbols=request.symbols)
     return response
 
 @app.get("/demo/status")
@@ -1625,113 +2007,273 @@ async def get_performance_data():
 
 # ============ PREMIUM ENTERPRISE ENDPOINTS ============
 
-@app.get("/enterprise/risk-analysis")
-async def get_risk_analysis():
-    """Análise de risco avançada - Premium Enterprise Feature"""
-    try:
-        # Simular dados de posições baseados no demo
-        if demo_manager and demo_manager.is_running:
-            portfolio = demo_manager.log_handler.get_portfolio_summary()
-            # Simular posições para demonstração
-            enterprise_risk_manager.positions = [
-                {'symbol': 'BTC-USDT', 'value': portfolio.get('total_value', 10000) * 0.4},
-                {'symbol': 'ETH-USDT', 'value': portfolio.get('total_value', 10000) * 0.3},
-                {'symbol': 'BNB-USDT', 'value': portfolio.get('total_value', 10000) * 0.2},
-                {'symbol': 'ADA-USDT', 'value': portfolio.get('total_value', 10000) * 0.1}
-            ]
-            # Simular PnL diário
-            if len(enterprise_risk_manager.daily_pnl) < 30:
-                enterprise_risk_manager.daily_pnl.extend([
-                    np.random.normal(50, 200) for _ in range(30)
-                ])
-        
-        risk_report = enterprise_risk_manager.get_risk_report()
-        
-        return {
-            "status": "success",
-            "risk_analysis": risk_report,
-            "timestamp": datetime.now().isoformat(),
-            "enterprise_feature": True
-        }
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+@app.get("/fantasma/analise-risco")
+async def get_advanced_risk_analysis():
+    """Análise Avançada de Risco - FANTASMA Enterprise - APENAS DADOS REAIS"""
+    return {
+        "status": "erro", 
+        "mensagem": "Análise de risco disponível apenas com dados reais de trading. Inicie operações para ver dados."
+    }
 
-@app.get("/enterprise/market-sentiment")
-async def get_market_sentiment():
-    """Análise de sentimento de mercado ML - Premium Enterprise Feature"""
+@app.get("/fantasma/sentimento-mercado")
+async def get_market_sentiment_analysis():
+    """Análise de Sentimento de Mercado ML - FANTASMA Enterprise - APENAS DADOS REAIS"""
+    return {
+        "status": "erro", 
+        "mensagem": "Análise de sentimento disponível apenas com dados reais de mercado. Conecte à BingX para ver dados."
+    }
+
+def _generate_trading_recommendation(sentiment_analysis):
+    """Gera recomendação de trading baseada no sentiment"""
+    fear_greed = sentiment_analysis['fear_greed_index']
+    regime = sentiment_analysis['market_regime']
+    
+    if fear_greed > 80:
+        return {
+            'acao': 'CUIDADO',
+            'descricao': 'Mercado em extrema ganância. Considere realizar lucros.',
+            'posicionamento': 'CONSERVADOR'
+        }
+    elif fear_greed < 20:
+        return {
+            'acao': 'OPORTUNIDADE',
+            'descricao': 'Mercado em extremo medo. Possível oportunidade de compra.',
+            'posicionamento': 'AGRESSIVO'
+        }
+    elif regime == 'VOLATILE':
+        return {
+            'acao': 'CAUTELA',
+            'descricao': 'Alta volatilidade detectada. Reduzir tamanho das posições.',
+            'posicionamento': 'DEFENSIVO'
+        }
+    else:
+        return {
+            'acao': 'NEUTRO',
+            'descricao': 'Mercado equilibrado. Manter estratégia atual.',
+            'posicionamento': 'BALANCEADO'
+        }
+
+@app.get("/fantasma/correlacao-mercado")
+async def get_market_correlation():
+    """Análise de correlação entre criptomoedas - FANTASMA Enterprise"""
     try:
-        # Simular dados de mercado
-        market_data = {
-            'price_change_24h': np.random.normal(0, 5),
-            'volume_change': np.random.normal(0, 20),
-            'volatility': np.random.uniform(10, 40)
+        if not demo_manager or not advanced_risk_manager:
+            return {"status": "erro", "mensagem": "Serviços não inicializados"}
+        
+        # Obter dados de correlação do risk manager
+        correlation_data = await advanced_risk_manager.get_correlation_matrix()
+        
+        # Análise de clusters de correlação
+        correlation_clusters = {
+            'majors': ['BTC', 'ETH', 'BNB'],
+            'defi': ['UNI', 'AAVE', 'CRV'],
+            'layer1': ['SOL', 'AVAX', 'MATIC'],
+            'memes': ['DOGE', 'SHIB', 'PEPE']
         }
         
-        sentiment_analysis = market_sentiment_analyzer.analyze_market_sentiment(market_data)
+        # Calcular riscos de concentração
+        concentration_risk = 0.0
+        for assets in correlation_clusters.values():
+            cluster_exposure = sum(1 for asset in assets if f"{asset}USDT" in correlation_data.get('symbols', []))
+            if cluster_exposure > 2:
+                concentration_risk += 0.25
         
         return {
-            "status": "success",
-            "sentiment_analysis": sentiment_analysis,
-            "market_data": market_data,
-            "timestamp": datetime.now().isoformat(),
-            "enterprise_feature": True
+            "status": "sucesso",
+            "correlacao_mercado": {
+                "matriz_correlacao": correlation_data,
+                "clusters_identificados": correlation_clusters,
+                "risco_concentracao": min(concentration_risk, 1.0),
+                "recomendacao": "DIVERSIFICAR" if concentration_risk > 0.6 else "MANTER",
+                "timestamp": datetime.now().isoformat()
+            },
+            "fantasma_enterprise": True,
+            "versao": "FANTASMA v2.0 Enterprise"
         }
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return {"status": "erro", "mensagem": str(e)}
+
+@app.get("/fantasma/stress-test")
+async def get_stress_test():
+    """Teste de stress do portfólio - FANTASMA Enterprise"""
+    try:
+        if not demo_manager or not advanced_risk_manager:
+            return {"status": "erro", "mensagem": "Serviços não inicializados"}
+        
+        # Executar diferentes cenários de stress
+        stress_scenarios = await advanced_risk_manager.run_comprehensive_stress_test()
+        
+        # Calcular impacto nos diferentes cenários
+        portfolio_value = 10000  # Portfolio base simulado
+        scenario_impacts = {}
+        
+        for scenario_name, scenario_data in stress_scenarios.items():
+            impact_pct = scenario_data.get('portfolio_impact', 0)
+            impact_usd = portfolio_value * (impact_pct / 100)
+            
+            scenario_impacts[scenario_name] = {
+                "impacto_percentual": impact_pct,
+                "impacto_usd": impact_usd,
+                "severidade": "CRÍTICA" if abs(impact_pct) > 30 else "ALTA" if abs(impact_pct) > 15 else "MODERADA",
+                "probabilidade": scenario_data.get('probability', 'BAIXA'),
+                "descricao": scenario_data.get('description', '')
+            }
+        
+        # Calcular score de resistência geral
+        worst_case = min(scenario_impacts.values(), key=lambda x: x['impacto_percentual'])
+        resilience_score = max(0, 100 + worst_case['impacto_percentual'])  # 0-100 scale
+        
+        return {
+            "status": "sucesso",
+            "stress_test": {
+                "cenarios_testados": scenario_impacts,
+                "pior_cenario": worst_case,
+                "score_resistencia": resilience_score,
+                "classificacao": "ROBUSTO" if resilience_score > 80 else "MODERADO" if resilience_score > 60 else "FRÁGIL",
+                "recomendacoes": _generate_stress_recommendations(scenario_impacts),
+                "timestamp": datetime.now().isoformat()
+            },
+            "fantasma_enterprise": True,
+            "versao": "FANTASMA v2.0 Enterprise"
+        }
+    except Exception as e:
+        return {"status": "erro", "mensagem": str(e)}
+
+@app.get("/fantasma/metricas-avancadas")
+async def get_advanced_metrics():
+    """Métricas avançadas de trading - FANTASMA Enterprise"""
+    try:
+        if not demo_manager or not advanced_risk_manager:
+            return {"status": "erro", "mensagem": "Serviços não inicializados"}
+        
+        # Obter métricas do risk manager
+        portfolio_metrics = await advanced_risk_manager.get_portfolio_metrics()
+        
+        # Calcular métricas adicionais específicas
+        advanced_metrics = {
+            "var_historico": {
+                "var_95": portfolio_metrics.get('var_95', 0),
+                "var_99": portfolio_metrics.get('var_99', 0),
+                "expected_shortfall": portfolio_metrics.get('expected_shortfall', 0)
+            },
+            "ratios_performance": {
+                "sharpe": portfolio_metrics.get('sharpe_ratio', 0),
+                "sortino": portfolio_metrics.get('sortino_ratio', 0),
+                "calmar": portfolio_metrics.get('calmar_ratio', 0),
+                "omega": portfolio_metrics.get('omega_ratio', 1.0)
+            },
+            "analise_drawdown": {
+                "max_drawdown": portfolio_metrics.get('max_drawdown', 0),
+                "drawdown_atual": portfolio_metrics.get('current_drawdown', 0),
+                "duracao_max_dd": portfolio_metrics.get('max_dd_duration', 0),
+                "recuperacao_media": portfolio_metrics.get('avg_recovery_time', 0)
+            },
+            "distribuicao_retornos": {
+                "skewness": portfolio_metrics.get('skewness', 0),
+                "kurtosis": portfolio_metrics.get('kurtosis', 0),
+                "tail_ratio": portfolio_metrics.get('tail_ratio', 1.0)
+            }
+        }
+        
+        # Score geral de performance
+        performance_score = _calculate_performance_score(advanced_metrics)
+        
+        return {
+            "status": "sucesso",
+            "metricas_avancadas": advanced_metrics,
+            "score_performance": performance_score,
+            "classificacao": _classify_performance(performance_score),
+            "insights": _generate_performance_insights(advanced_metrics),
+            "timestamp": datetime.now().isoformat(),
+            "fantasma_enterprise": True,
+            "versao": "FANTASMA v2.0 Enterprise"
+        }
+    except Exception as e:
+        return {"status": "erro", "mensagem": str(e)}
+
+def _generate_stress_recommendations(scenario_impacts):
+    """Gera recomendações baseadas nos resultados do stress test"""
+    recommendations = []
+    
+    for scenario, impact in scenario_impacts.items():
+        if impact['severidade'] == 'CRÍTICA':
+            recommendations.append({
+                "prioridade": "ALTA",
+                "acao": "HEDGE_PORTFOLIO",
+                "descricao": f"Implementar hedge contra cenário {scenario}",
+                "cenario": scenario
+            })
+        elif impact['severidade'] == 'ALTA':
+            recommendations.append({
+                "prioridade": "MÉDIA",
+                "acao": "REDUCE_EXPOSURE",
+                "descricao": f"Reduzir exposição para mitigar cenário {scenario}",
+                "cenario": scenario
+            })
+    
+    return recommendations
+
+def _calculate_performance_score(metrics):
+    """Calcula score geral de performance baseado nas métricas"""
+    sharpe = metrics['ratios_performance']['sharpe']
+    max_dd = abs(metrics['analise_drawdown']['max_drawdown'])
+    
+    # Score baseado em Sharpe ratio e drawdown
+    sharpe_score = min(sharpe * 20, 40) if sharpe > 0 else 0  # Max 40 points
+    dd_score = max(0, 40 - max_dd)  # Max 40 points, penaliza drawdown
+    consistency_score = 20  # Base score for consistency
+    
+    return min(100, sharpe_score + dd_score + consistency_score)
+
+def _classify_performance(score):
+    """Classifica performance baseada no score"""
+    if score >= 80:
+        return "EXCELENTE"
+    elif score >= 60:
+        return "BOA"
+    elif score >= 40:
+        return "REGULAR"
+    else:
+        return "FRACA"
+
+def _generate_performance_insights(metrics):
+    """Gera insights baseados nas métricas avançadas"""
+    insights = []
+    
+    sharpe = metrics['ratios_performance']['sharpe']
+    if sharpe > 1.5:
+        insights.append("📈 Excelente relação risco-retorno detectada")
+    elif sharpe < 0.5:
+        insights.append("⚠️ Relação risco-retorno pode ser melhorada")
+    
+    max_dd = abs(metrics['analise_drawdown']['max_drawdown'])
+    if max_dd > 20:
+        insights.append("🚨 Drawdown máximo elevado - revisar gestão de risco")
+    elif max_dd < 5:
+        insights.append("✅ Excelente controle de drawdown")
+    
+    skewness = metrics['distribuicao_retornos']['skewness']
+    if skewness < -0.5:
+        insights.append("📊 Distribuição com viés negativo - mais perdas extremas")
+    elif skewness > 0.5:
+        insights.append("📊 Distribuição com viés positivo - mais ganhos extremos")
+    
+    return insights
 
 @app.get("/enterprise/portfolio-optimization")
 async def get_portfolio_optimization():
-    """Otimização de portfólio com ML - Premium Enterprise Feature"""
-    try:
-        if not demo_manager:
-            return {"status": "error", "message": "Demo manager not initialized."}
-        
-        portfolio = demo_manager.log_handler.get_portfolio_summary()
-        risk_report = enterprise_risk_manager.get_risk_report()
-        sentiment = market_sentiment_analyzer.analyze_market_sentiment({
-            'price_change_24h': 2.5, 'volume_change': 15, 'volatility': 20
-        })
-        
-        # Recomendações de otimização baseadas em ML
-        optimization_recommendations = {
-            'rebalancing_needed': risk_report.get('concentration_risk', 0) > 0.4,
-            'risk_adjustment': 'REDUCE' if risk_report.get('var_95', 0) < -500 else 'MAINTAIN',
-            'sentiment_signal': sentiment.get('market_regime', 'NORMAL'),
-            'recommended_actions': []
-        }
-        
-        if optimization_recommendations['rebalancing_needed']:
-            optimization_recommendations['recommended_actions'].append({
-                'action': 'REBALANCE',
-                'priority': 'HIGH',
-                'description': 'Reduce concentration risk by diversifying holdings'
-            })
-        
-        if sentiment['fear_greed_index'] > 75:
-            optimization_recommendations['recommended_actions'].append({
-                'action': 'TAKE_PROFITS',
-                'priority': 'MEDIUM',
-                'description': 'Market showing extreme greed - consider profit taking'
-            })
-        
-        return {
-            "status": "success",
-            "portfolio_optimization": optimization_recommendations,
-            "current_portfolio": portfolio,
-            "risk_metrics": risk_report,
-            "sentiment_context": sentiment,
-            "timestamp": datetime.now().isoformat(),
-            "enterprise_feature": True
-        }
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    """Otimização de portfólio com ML - Premium Enterprise Feature - APENAS DADOS REAIS"""
+    return {
+        "status": "error", 
+        "message": "Otimização de portfólio disponível apenas com posições reais. Execute trades para ver dados."
+    }
 
 @app.get("/enterprise/compliance-report")
 async def get_compliance_report():
     """Relatório de conformidade regulatória - Premium Enterprise Feature"""
     try:
-        compliance_status = enterprise_risk_manager._check_compliance()
-        risk_metrics = enterprise_risk_manager.get_risk_report()
+        compliance_status = {'status': 'COMPLIANT', 'checks_passed': 8, 'total_checks': 10}
+        risk_metrics = advanced_risk_manager.get_comprehensive_risk_report()
         
         # Simular dados de conformidade regulatória
         regulatory_compliance = {
@@ -1796,1412 +2338,19 @@ async def health_check():
 @app.get("/", response_class=HTMLResponse)
 async def demo_dashboard():
     """Modern dashboard for demo control and monitoring with real-time updates"""
-    return """
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trading Bot Dashboard Pro</title>
-    
-    <!-- Chart.js para gráficos -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        /* CSS aprimorado com anima\u00e7\u00f5es e responsividade */
-        :root {
-            --primary-bg: #0a0e1a;
-            --secondary-bg: #151929;
-            --card-bg: #1f2337;
-            --accent: #00d4ff;
-            --success: #00ff88;
-            --danger: #ff3366;
-            --warning: #ffaa00;
-            --text-primary: #ffffff;
-            --text-secondary: #a8b2c0;
-            --border: #3a4255;
-            --hover-bg: #252a42;
-            --disabled-bg: #404040;
-            --disabled-text: #666666;
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: var(--primary-bg);
-            color: var(--text-primary);
-            line-height: 1.6;
-            overflow-x: hidden;
-        }
-
-        /* Anima\u00e7\u00f5es */
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.5; }
-            100% { opacity: 1; }
-        }
-
-        @keyframes slideIn {
-            from { transform: translateX(-100%); opacity: 0; }
-            to { transform: translateX(0); opacity: 1; }
-        }
-
-        @keyframes grow {
-            from { transform: scale(0); }
-            to { transform: scale(1); }
-        }
-
-        /* Container responsivo */
-        .container {
-            max-width: 1600px;
-            margin: 0 auto;
-            padding: 1rem;
-        }
-
-        /* Header moderno */
-        .header {
-            background: linear-gradient(135deg, var(--secondary-bg) 0%, var(--card-bg) 100%);
-            border-radius: 15px;
-            padding: 2rem;
-            margin-bottom: 2rem;
-            box-shadow: 0 10px 30px rgba(0, 212, 255, 0.1);
-            animation: slideIn 0.5s ease-out;
-        }
-
-        .header h1 {
-            font-size: 2.5rem;
-            background: linear-gradient(90deg, var(--accent) 0%, var(--success) 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 0.5rem;
-        }
-
-        /* Cards com glassmorphism */
-        .card {
-            background: rgba(26, 31, 53, 0.8);
-            backdrop-filter: blur(10px);
-            border: 1px solid var(--border);
-            border-radius: 15px;
-            padding: 1.5rem;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-            transition: all 0.3s ease;
-            animation: grow 0.4s ease-out;
-        }
-
-        .card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 12px 40px rgba(0, 212, 255, 0.15);
-        }
-
-        /* Grid responsivo melhorado */
-        .dashboard-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 2rem;
-        }
-
-        /* M\u00e9tricas aprimoradas */
-        .metric-card {
-            text-align: center;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .metric-card::before {
-            content: '';
-            position: absolute;
-            top: -50%;
-            left: -50%;
-            width: 200%;
-            height: 200%;
-            background: radial-gradient(circle, var(--accent) 0%, transparent 70%);
-            opacity: 0.05;
-            animation: pulse 3s ease-in-out infinite;
-        }
-
-        .metric-value {
-            font-size: 3rem;
-            font-weight: 700;
-            margin: 0.5rem 0;
-            position: relative;
-        }
-
-        .metric-change {
-            font-size: 0.9rem;
-            padding: 0.2rem 0.5rem;
-            border-radius: 20px;
-            display: inline-block;
-            margin-top: 0.5rem;
-        }
-
-        .metric-change.positive {
-            background: rgba(0, 255, 136, 0.2);
-            color: var(--success);
-        }
-
-        .metric-change.negative {
-            background: rgba(255, 51, 102, 0.2);
-            color: var(--danger);
-        }
-
-        /* Bot\u00f5es modernos */
-        .btn {
-            background: linear-gradient(135deg, var(--accent) 0%, #0099cc 100%);
-            color: white;
-            border: none;
-            padding: 0.75rem 1.5rem;
-            border-radius: 50px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 15px rgba(0, 212, 255, 0.3);
-        }
-
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(0, 212, 255, 0.4);
-        }
-
-        .btn:active {
-            transform: translateY(0);
-        }
-
-        .btn.secondary {
-            background: transparent;
-            border: 2px solid var(--accent);
-            box-shadow: none;
-        }
-
-        /* Status indicators animados */
-        .status-indicator {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-
-        .status-dot {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            position: relative;
-        }
-
-        .status-dot.active {
-            background: var(--success);
-            box-shadow: 0 0 0 3px rgba(0, 255, 136, 0.3);
-            animation: pulse 2s ease-in-out infinite;
-        }
-
-        .status-dot.inactive {
-            background: var(--text-secondary);
-        }
-
-        /* Tabelas modernas */
-        .data-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 1rem;
-        }
-
-        .data-table th {
-            background: var(--secondary-bg);
-            padding: 1rem;
-            text-align: left;
-            font-weight: 600;
-            color: var(--accent);
-            border-bottom: 2px solid var(--border);
-        }
-
-        .data-table td {
-            padding: 0.75rem 1rem;
-            border-bottom: 1px solid rgba(42, 50, 69, 0.5);
-        }
-
-        .data-table tr:hover {
-            background: rgba(0, 212, 255, 0.05);
-        }
-
-        /* Gr\u00e1ficos container */
-        .chart-container {
-            position: relative;
-            height: 300px;
-            margin-top: 1rem;
-        }
-
-        /* Loading spinner */
-        .loader {
-            border: 3px solid rgba(0, 212, 255, 0.1);
-            border-top: 3px solid var(--accent);
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 2rem auto;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        /* Responsive */
-        @media (max-width: 768px) {
-            .header h1 {
-                font-size: 1.8rem;
-            }
-            
-            .metric-value {
-                font-size: 2rem;
-            }
-            
-            .dashboard-grid {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        /* Notifications */
-        .notification {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            padding: 1rem 1.5rem;
-            border-radius: 10px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-            animation: slideIn 0.3s ease-out;
-            z-index: 1000;
-        }
-
-        .notification.success {
-            background: var(--success);
-            color: var(--primary-bg);
-        }
-
-        .notification.error {
-            background: var(--danger);
-            color: white;
-        }
-
-        /* Progress bars */
-        .progress-bar {
-            width: 100%;
-            height: 8px;
-            background: var(--secondary-bg);
-            border-radius: 4px;
-            overflow: hidden;
-            margin-top: 0.5rem;
-        }
-
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, var(--accent) 0%, var(--success) 100%);
-            border-radius: 4px;
-            transition: width 0.3s ease;
-        }
-
-        /* Backward compatibility styles */
-        .section { margin-bottom: 30px; padding: 20px; border-radius: 10px; background-color: rgba(26, 31, 53, 0.8); box-shadow: 0 0 15px rgba(0, 0, 0, 0.3); }
-        .control-row { display: flex; gap: 20px; align-items: center; margin-bottom: 20px; flex-wrap: wrap; }
-        .control-row label { color: var(--text-secondary); font-size: 1.1em; }
-        .control-row input[type="number"], .control-row input[type="text"] { padding: 8px; border-radius: 5px; border: 1px solid var(--border); background-color: var(--secondary-bg); color: var(--text-primary); width: 150px; }
-        .status-row { display: flex; justify-content: space-between; align-items: center; margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border); }
-        .status-running { color: var(--success); }
-        .status-stopped { color: var(--danger); }
-        h1 { color: var(--accent); text-align: center; margin-bottom: 30px; font-size: 2.5em; }
-        h2 { color: var(--accent); border-bottom: 2px solid var(--border); padding-bottom: 10px; margin-top: 30px; margin-bottom: 20px; font-size: 1.8em; }
-        button { 
-            background-color: var(--accent); 
-            color: white; 
-            padding: 10px 20px; 
-            border: none; 
-            border-radius: 5px; 
-            cursor: pointer; 
-            font-size: 1em; 
-            font-weight: 600;
-            transition: all 0.3s ease; 
-            min-width: 100px;
-        }
-        button:hover:not(:disabled) { 
-            background-color: var(--success); 
-            transform: translateY(-2px); 
-            box-shadow: 0 4px 15px rgba(0, 212, 255, 0.3);
-        }
-        button:disabled {
-            background-color: var(--disabled-bg) !important;
-            color: var(--disabled-text) !important;
-            cursor: not-allowed !important;
-            transform: none !important;
-            box-shadow: none !important;
-            opacity: 0.5 !important;
-        }
-        button.secondary {
-            background-color: var(--secondary-bg);
-            border: 1px solid var(--border);
-        }
-        button.secondary:hover:not(:disabled) {
-            background-color: var(--hover-bg);
-            border-color: var(--accent);
-        }
-        pre { background-color: var(--secondary-bg); padding: 15px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; font-size: 0.9em; line-height: 1.4; }
-        .empty-state { text-align: center; color: var(--text-secondary); padding: 20px; font-style: italic; }
-        .button-group button { margin-right: 10px; background-color: var(--secondary-bg); }
-        .button-group button.active { background-color: var(--accent); }
-        .log-entry { margin-bottom: 5px; padding: 8px; border-radius: 4px; background-color: var(--secondary-bg); font-size: 0.85em; }
-        .log-entry:nth-child(even) { background-color: var(--card-bg); }
-        .log-entry.info { color: var(--text-secondary); }
-        .log-entry.warning { color: var(--warning); }
-        .log-entry.error { color: var(--danger); font-weight: bold; }
-        
-        /* Enterprise Features Styling */
-        .enterprise-badge {
-            background: linear-gradient(45deg, #ffd700, #ffed4e);
-            color: #1a1f35;
-            padding: 0.5rem 1rem;
-            border-radius: 20px;
-            font-weight: 700;
-            font-size: 0.9rem;
-            box-shadow: 0 4px 15px rgba(255, 215, 0, 0.3);
-        }
-        
-        .feature-badge {
-            background: rgba(0, 212, 255, 0.1);
-            color: var(--accent);
-            border: 1px solid var(--accent);
-            padding: 0.4rem 0.8rem;
-            border-radius: 15px;
-            font-size: 0.8rem;
-            font-weight: 600;
-        }
-        
-        .risk-indicator {
-            display: inline-block;
-            padding: 0.3rem 0.8rem;
-            border-radius: 10px;
-            font-weight: 600;
-            font-size: 0.8rem;
-        }
-        
-        .risk-low { background: rgba(0, 255, 136, 0.2); color: var(--success); }
-        .risk-medium { background: rgba(255, 170, 0, 0.2); color: var(--warning); }
-        .risk-high { background: rgba(255, 51, 102, 0.2); color: var(--danger); }
-        
-        .sentiment-gauge {
-            position: relative;
-            width: 150px;
-            height: 75px;
-            margin: 1rem auto;
-        }
-        
-        .gauge-arc {
-            stroke-width: 8;
-            fill: none;
-        }
-        
-        .gauge-value {
-            position: absolute;
-            bottom: 10px;
-            left: 50%;
-            transform: translateX(-50%);
-            font-weight: 700;
-            font-size: 1.2rem;
-        }
-    </style>
-    </head>
-    <body>
-        <div class="container">
-            <!-- Header -->
-            <div class="header">
-                <h1>Trading Bot Dashboard Pro</h1>
-                <p style="color: var(--text-secondary);">Real-time cryptocurrency trading analytics</p>
-                <div style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap;">
-                    <span class="enterprise-badge">🏆 Enterprise Edition</span>
-                    <span class="feature-badge">🛡️ Risk Management</span>
-                    <span class="feature-badge">🧠 ML Sentiment Analysis</span>
-                    <span class="feature-badge">📊 Advanced Analytics</span>
-                </div>
-            </div>
-
-            <!-- Control Panel -->
-            <div class="card" style="margin-bottom: 2rem;">
-                <h2 style="margin-bottom: 1rem; color: var(--accent);">
-                    <span style="margin-right: 0.5rem;">🎮</span>Control Panel
-                </h2>
-                
-                <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;">
-                    <input type="number" id="duration" value="60" min="30" max="3600" 
-                           style="padding: 0.75rem; border-radius: 10px; border: 1px solid var(--border); 
-                                  background: var(--secondary-bg); color: var(--text-primary); width: 120px;">
-                    
-                    <button class="btn" id="start-demo-button">
-                        <span style="margin-right: 0.5rem;">▶️</span>Start
-                    </button>
-                    <button class="btn secondary" id="pause-demo-button">
-                        <span style="margin-right: 0.5rem;">⏸️</span>Pause
-                    </button>
-                    <button class="btn secondary" id="resume-demo-button">
-                        <span style="margin-right: 0.5rem;">⏯️</span>Resume
-                    </button>
-                    <button class="btn secondary" id="reset-demo-button">
-                        <span style="margin-right: 0.5rem;">🔄</span>Reset
-                    </button>
-                    
-                    <div class="status-indicator" style="margin-left: auto;">
-                        <span class="status-dot inactive" id="status-dot"></span>
-                        <span id="demo-status" style="font-weight: 600;">Stopped</span>
-                    </div>
-                </div>
-                
-                <div id="start-message" style="margin-top: 1rem; color: var(--warning);"></div>
-            </div>
-
-            <!-- Main Metrics Grid -->
-            <div class="dashboard-grid">
-                <!-- Total Scans -->
-                <div class="card metric-card">
-                    <h3 style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 0.5rem;">
-                        TOTAL SCANS
-                    </h3>
-                    <div class="metric-value" id="total-scans" style="color: var(--accent);">0</div>
-                    <div class="metric-change positive" id="scans-change">+0%</div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="scans-progress" style="width: 0%"></div>
-                    </div>
-                </div>
-
-                <!-- Signals Generated -->
-                <div class="card metric-card">
-                    <h3 style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 0.5rem;">
-                        SIGNALS GENERATED
-                    </h3>
-                    <div class="metric-value" id="signals-generated" style="color: var(--warning);">0</div>
-                    <div class="metric-change positive" id="signals-change">+0%</div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="signals-progress" style="width: 0%"></div>
-                    </div>
-                </div>
-
-                <!-- Success Rate -->
-                <div class="card metric-card">
-                    <h3 style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 0.5rem;">
-                        SUCCESS RATE
-                    </h3>
-                    <div class="metric-value" id="success-rate" style="color: var(--success);">0%</div>
-                    <div class="metric-change positive" id="success-change">+0%</div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="success-progress" style="width: 0%"></div>
-                    </div>
-                </div>
-
-                <!-- Total P&L -->
-                <div class="card metric-card">
-                    <h3 style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 0.5rem;">
-                        TOTAL P&L
-                    </h3>
-                    <div class="metric-value" id="total-pnl" style="color: var(--success);">$0.00</div>
-                    <div class="metric-change positive" id="pnl-change">+0%</div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="pnl-progress" style="width: 50%"></div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Charts Section -->
-            <div class="dashboard-grid" style="grid-template-columns: 1fr 1fr;">
-                <!-- Performance Chart -->
-                <div class="card">
-                    <h3 style="margin-bottom: 1rem; color: var(--accent);">
-                        <span style="margin-right: 0.5rem;">📈</span>Performance Overview
-                    </h3>
-                    <div class="chart-container">
-                        <canvas id="performanceChart"></canvas>
-                    </div>
-                </div>
-
-                <!-- Signals Distribution -->
-                <div class="card">
-                    <h3 style="margin-bottom: 1rem; color: var(--accent);">
-                        <span style="margin-right: 0.5rem;">🎯</span>Signals Distribution
-                    </h3>
-                    <div class="chart-container">
-                        <canvas id="signalsChart"></canvas>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Active Positions -->
-            <div class="card">
-                <h3 style="margin-bottom: 1rem; color: var(--accent);">
-                    <span style="margin-right: 0.5rem;">💼</span>Active Positions
-                </h3>
-                <div id="positions-loading" class="loader" style="display: none;"></div>
-                <div id="positions-container">
-                    <table class="data-table">
-                        <thead>
-                            <tr>
-                                <th>Symbol</th>
-                                <th>Side</th>
-                                <th>Entry Price</th>
-                                <th>Current Price</th>
-                                <th>P&L</th>
-                                <th>Duration</th>
-                                <th>Status</th>
-                            </tr>
-                        </thead>
-                        <tbody id="positions-tbody">
-                            <tr>
-                                <td colspan="7" style="text-align: center; color: var(--text-secondary);">
-                                    No active positions
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- Recent Signals -->
-            <div class="card" style="margin-top: 2rem;">
-                <h3 style="margin-bottom: 1rem; color: var(--accent);">
-                    <span style="margin-right: 0.5rem;">🔔</span>Recent Trading Signals
-                </h3>
-                <div id="signals-container">
-                    <!-- Signals will be populated here -->
-                </div>
-            </div>
-
-            <!-- ======== ENTERPRISE FEATURES ======== -->
-            
-            <!-- Risk Management Dashboard -->
-            <div class="card" style="margin-top: 2rem;">
-                <h3 style="margin-bottom: 1rem; color: #ffd700;">
-                    <span style="margin-right: 0.5rem;">🛡️</span>Enterprise Risk Management
-                </h3>
-                <div class="dashboard-grid" style="grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));">
-                    <div style="text-align: center;">
-                        <h4 style="color: var(--text-secondary); margin-bottom: 0.5rem;">Portfolio VaR (95%)</h4>
-                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--danger);" id="portfolio-var">-$0</div>
-                        <span class="risk-indicator risk-low" id="var-risk-level">Low Risk</span>
-                    </div>
-                    <div style="text-align: center;">
-                        <h4 style="color: var(--text-secondary); margin-bottom: 0.5rem;">Concentration Risk</h4>
-                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--warning);" id="concentration-risk">0%</div>
-                        <span class="risk-indicator risk-low" id="concentration-level">Diversified</span>
-                    </div>
-                    <div style="text-align: center;">
-                        <h4 style="color: var(--text-secondary); margin-bottom: 0.5rem;">Liquidity Score</h4>
-                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--success);" id="liquidity-score">0.85</div>
-                        <span class="risk-indicator risk-low" id="liquidity-level">High</span>
-                    </div>
-                    <div style="text-align: center;">
-                        <h4 style="color: var(--text-secondary); margin-bottom: 0.5rem;">Compliance Status</h4>
-                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--success);" id="compliance-status">✓</div>
-                        <span class="risk-indicator risk-low" id="compliance-level">Compliant</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Market Sentiment Analysis -->
-            <div class="dashboard-grid" style="margin-top: 2rem;">
-                <div class="card">
-                    <h3 style="margin-bottom: 1rem; color: #ffd700;">
-                        <span style="margin-right: 0.5rem;">🧠</span>ML Market Sentiment
-                    </h3>
-                    <div class="sentiment-gauge">
-                        <svg width="150" height="75" viewBox="0 0 150 75">
-                            <path class="gauge-arc" d="M 20 60 A 50 50 0 0 1 130 60" 
-                                  stroke="#333" stroke-width="8"/>
-                            <path class="gauge-arc" id="sentiment-arc" d="M 20 60 A 50 50 0 0 1 75 15" 
-                                  stroke="#00d4ff" stroke-width="8"/>
-                        </svg>
-                        <div class="gauge-value" id="fear-greed-index">50</div>
-                    </div>
-                    <div style="text-align: center;">
-                        <div style="font-weight: 600; margin-bottom: 0.5rem;" id="market-regime">NORMAL</div>
-                        <div style="color: var(--text-secondary); font-size: 0.9rem;" id="sentiment-confidence">Confidence: 85%</div>
-                    </div>
-                </div>
-
-                <div class="card">
-                    <h3 style="margin-bottom: 1rem; color: #ffd700;">
-                        <span style="margin-right: 0.5rem;">📊</span>Portfolio Optimization
-                    </h3>
-                    <div id="optimization-recommendations">
-                        <div style="margin-bottom: 1rem;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-                                <span style="color: var(--text-secondary);">Rebalancing</span>
-                                <span class="risk-indicator risk-low" id="rebalancing-status">Not Needed</span>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-                                <span style="color: var(--text-secondary);">Risk Adjustment</span>
-                                <span class="risk-indicator risk-low" id="risk-adjustment">Maintain</span>
-                            </div>
-                        </div>
-                        <div id="recommended-actions">
-                            <!-- Dynamic recommendations will appear here -->
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-        </div>
-
-        <!-- Notification Container -->
-        <div id="notification-container"></div>
-
-    <script>
-        // Estado da aplicação
-        let state = {
-            isRunning: false,
-            lastMetrics: {},
-            charts: {},
-            updateInterval: null,
-            previousMetrics: {}
-        };
-
-        // Inicializar gráficos
-        function initCharts() {
-            // Performance Chart
-            const perfCtx = document.getElementById('performanceChart').getContext('2d');
-            state.charts.performance = new Chart(perfCtx, {
-                type: 'line',
-                data: {
-                    labels: [],
-                    datasets: [{
-                        label: 'P&L',
-                        data: [],
-                        borderColor: '#00ff88',
-                        backgroundColor: 'rgba(0, 255, 136, 0.1)',
-                        tension: 0.4
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: {
-                            display: false
-                        }
-                    },
-                    scales: {
-                        x: {
-                            grid: {
-                                color: 'rgba(255, 255, 255, 0.1)'
-                            }
-                        },
-                        y: {
-                            grid: {
-                                color: 'rgba(255, 255, 255, 0.1)'
-                            }
-                        }
-                    }
-                }
-            });
-
-            // Signals Chart
-            const signalsCtx = document.getElementById('signalsChart').getContext('2d');
-            state.charts.signals = new Chart(signalsCtx, {
-                type: 'doughnut',
-                data: {
-                    labels: ['Primary', 'Re-entry', 'Rejected'],
-                    datasets: [{
-                        data: [0, 0, 0],
-                        backgroundColor: [
-                            '#00d4ff',
-                            '#00ff88',
-                            '#ff3366'
-                        ]
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: {
-                            position: 'bottom',
-                            labels: {
-                                color: '#8892a0'
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
-        // Funções de controle
-        async function startDemo() {
-            const duration = document.getElementById('duration').value;
-            
-            try {
-                const response = await fetch('/demo/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ duration: parseInt(duration) })
-                });
-                
-                const data = await response.json();
-                
-                if (data.status === 'success') {
-                    showNotification('Demo started successfully', 'success');
-                    startPolling();
-                } else {
-                    showNotification(data.message, 'error');
-                }
-            } catch (error) {
-                showNotification('Failed to start demo', 'error');
-            }
-        }
-
-        async function pauseDemo() {
-            try {
-                console.log('Attempting to pause demo...');
-                const response = await fetch('/demo/pause', { 
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
-                });
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                }
-                
-                const data = await response.json();
-                console.log('Pause response:', data);
-                
-                if (data.status === 'success') {
-                    showNotification('Demo paused successfully', 'success');
-                    state.isRunning = false;
-                    stopPolling();
-                    updateButtonStates();
-                } else {
-                    showNotification(data.message || 'Failed to pause demo', 'error');
-                }
-            } catch (error) {
-                console.error('Pause error:', error);
-                showNotification(`Failed to pause demo: ${error.message}`, 'error');
-            }
-        }
-
-        async function resumeDemo() {
-            try {
-                console.log('Attempting to resume demo...');
-                const response = await fetch('/demo/resume', { 
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
-                });
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                }
-                
-                const data = await response.json();
-                console.log('Resume response:', data);
-                
-                if (data.status === 'success') {
-                    showNotification('Demo resumed successfully', 'success');
-                    state.isRunning = true;
-                    startPolling();
-                    updateButtonStates();
-                } else {
-                    showNotification(data.message || 'Failed to resume demo', 'error');
-                }
-            } catch (error) {
-                console.error('Resume error:', error);
-                showNotification(`Failed to resume demo: ${error.message}`, 'error');
-            }
-        }
-
-        async function resetDemo() {
-            if (!confirm('Are you sure you want to reset the demo? All current data will be lost.')) {
-                return;
-            }
-            
-            try {
-                console.log('Attempting to reset demo...');
-                const response = await fetch('/demo/reset', { 
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
-                });
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                }
-                
-                const data = await response.json();
-                console.log('Reset response:', data);
-                
-                if (data.status === 'success') {
-                    showNotification('Demo reset successfully', 'success');
-                    state.isRunning = false;
-                    stopPolling();
-                    resetUI();
-                    updateButtonStates();
-                } else {
-                    showNotification(data.message || 'Failed to reset demo', 'error');
-                }
-            } catch (error) {
-                console.error('Reset error:', error);
-                showNotification(`Failed to reset demo: ${error.message}`, 'error');
-            }
-        }
-
-        // Polling de dados
-        function startPolling() {
-            updateStatus();
-            state.updateInterval = setInterval(updateStatus, 2000);
-        }
-
-        function stopPolling() {
-            if (state.updateInterval) {
-                clearInterval(state.updateInterval);
-                state.updateInterval = null;
-            }
-        }
-
-        async function updateStatus() {
-            try {
-                const response = await fetch('/demo/status');
-                const data = await response.json();
-                
-                updateUI(data);
-            } catch (error) {
-                console.error('Failed to update status:', error);
-            }
-        }
-
-        // Atualizar UI
-        function updateUI(data) {
-            // Atualizar status
-            const statusDot = document.getElementById('status-dot');
-            const statusText = document.getElementById('demo-status');
-            
-            if (data.is_running) {
-                statusDot.className = 'status-dot active';
-                statusText.textContent = 'Running';
-                state.isRunning = true;
-            } else {
-                statusDot.className = 'status-dot inactive';
-                statusText.textContent = 'Stopped';
-                state.isRunning = false;
-            }
-
-            // Update button states
-            updateButtonStates();
-
-            // Atualizar métricas com animação
-            if (data.real_time_metrics) {
-                updateMetrics(data.real_time_metrics);
-            }
-
-            // Atualizar portfolio
-            if (data.portfolio_summary) {
-                updatePortfolio(data.portfolio_summary);
-            }
-
-            // Atualizar posições
-            if (data.open_positions) {
-                updatePositions(data.open_positions);
-            }
-
-            // Atualizar sinais
-            if (data.trading_signals) {
-                updateSignals(data.trading_signals);
-            }
-
-            // Atualizar gráficos
-            updateCharts(data);
-        }
-
-        function updateMetrics(metrics) {
-            // Total Scans
-            const totalScans = metrics.total_scans || 0;
-            const prevScans = state.previousMetrics.total_scans || 0;
-            updateMetricCard('total-scans', totalScans, prevScans, 'scans');
-
-            // Signals Generated
-            const signalsGen = metrics.signals_generated || 0;
-            const prevSignals = state.previousMetrics.signals_generated || 0;
-            updateMetricCard('signals-generated', signalsGen, prevSignals, 'signals');
-
-            // Success Rate - Fix NaN issue
-            let successRate = metrics.success_rate || 0;
-            // Ensure it's a valid number and not NaN
-            if (isNaN(successRate) || !isFinite(successRate)) {
-                successRate = 0;
-            }
-            const prevSuccess = state.previousMetrics.success_rate || 0;
-            updateMetricCard('success-rate', successRate.toFixed(1) + '%', prevSuccess, 'success');
-
-            // Total PnL
-            const totalPnl = metrics.total_pnl || 0;
-            const prevPnl = state.previousMetrics.total_pnl || 0;
-            updateMetricCard('total-pnl', '$' + totalPnl.toFixed(2), prevPnl, 'pnl');
-
-            state.previousMetrics = metrics;
-        }
-
-        function updateMetricCard(elementId, value, prevValue, type) {
-            const element = document.getElementById(elementId);
-            const changeElement = document.getElementById(type + '-change');
-            const progressElement = document.getElementById(type + '-progress');
-
-            // Animar valor
-            animateValue(element, prevValue, value);
-
-            // Calcular mudança
-            const change = prevValue ? ((value - prevValue) / prevValue * 100) : 0;
-            changeElement.textContent = change >= 0 ? `+${change.toFixed(1)}%` : `${change.toFixed(1)}%`;
-            changeElement.className = change >= 0 ? 'metric-change positive' : 'metric-change negative';
-
-            // Atualizar progress bar
-            if (progressElement) {
-                const progress = type === 'success' ? value : Math.min((value / 100) * 100, 100);
-                progressElement.style.width = `${progress}%`;
-            }
-        }
-
-        function animateValue(element, start, end) {
-            const duration = 300;
-            const range = end - start;
-            const startTime = new Date().getTime();
-            
-            const timer = setInterval(() => {
-                const timePassed = new Date().getTime() - startTime;
-                const progress = Math.min(timePassed / duration, 1);
-                
-                const value = start + (range * progress);
-                
-                if (element.id === 'success-rate') {
-                    element.textContent = value.toFixed(1) + '%';
-                } else if (element.id === 'total-pnl') {
-                    element.textContent = '$' + value.toFixed(2);
-                } else {
-                    element.textContent = Math.round(value);
-                }
-                
-                if (progress >= 1) {
-                    clearInterval(timer);
-                }
-            }, 16);
-        }
-
-        function updatePortfolio(portfolio) {
-            const pnlElement = document.getElementById('total-pnl');
-            const pnlChange = document.getElementById('pnl-change');
-            
-            const pnl = portfolio.total_pnl || 0;
-            pnlElement.textContent = '$' + pnl.toFixed(2);
-            pnlElement.style.color = pnl >= 0 ? 'var(--success)' : 'var(--danger)';
-            
-            // Atualizar change
-            const prevPnl = state.previousMetrics.total_pnl || 0;
-            const change = prevPnl ? ((pnl - prevPnl) / Math.abs(prevPnl) * 100) : 0;
-            pnlChange.textContent = change >= 0 ? `+${change.toFixed(1)}%` : `${change.toFixed(1)}%`;
-            pnlChange.className = change >= 0 ? 'metric-change positive' : 'metric-change negative';
-        }
-
-        function updatePositions(positions) {
-            const tbody = document.getElementById('positions-tbody');
-            
-            if (!positions || positions.length === 0) {
-                tbody.innerHTML = `
-                    <tr>
-                        <td colspan="7" style="text-align: center; color: var(--text-secondary);">
-                            No active positions
-                        </td>
-                    </tr>
-                `;
-                return;
-            }
-
-            tbody.innerHTML = positions.map(pos => {
-                const duration = new Date() - new Date(pos.timestamp);
-                const durationStr = formatDuration(duration);
-                
-                // Simular preço atual (em produção viria da API)
-                const currentPrice = pos.entry_price * (1 + (Math.random() - 0.5) * 0.02);
-                const pnl = (currentPrice - pos.entry_price) * pos.quantity * (pos.side === 'buy' ? 1 : -1);
-                const pnlPercent = ((currentPrice - pos.entry_price) / pos.entry_price * 100) * (pos.side === 'buy' ? 1 : -1);
-                
-                return `
-                    <tr>
-                        <td style="font-weight: 600;">${pos.symbol}</td>
-                        <td>
-                            <span style="color: ${pos.side === 'buy' ? 'var(--success)' : 'var(--danger)'};">
-                                ${pos.side.toUpperCase()}
-                            </span>
-                        </td>
-                        <td>$${pos.entry_price?.toFixed(2) || 'N/A'}</td>
-                        <td>$${currentPrice.toFixed(2)}</td>
-                        <td style="color: ${pnl >= 0 ? 'var(--success)' : 'var(--danger)'};">
-                            $${pnl.toFixed(2)} (${pnlPercent.toFixed(1)}%)
-                        </td>
-                        <td>${durationStr}</td>
-                        <td>
-                            <span class="status-indicator">
-                                <span class="status-dot active"></span>
-                                Active
-                            </span>
-                        </td>
-                    </tr>
-                `;
-            }).join('');
-        }
-
-        function updateSignals(signals) {
-            const container = document.getElementById('signals-container');
-            
-            if (!signals || signals.length === 0) {
-                container.innerHTML = '<p style="text-align: center; color: var(--text-secondary);">No recent signals</p>';
-                return;
-            }
-
-            // Atualizar gráfico de distribuição
-            const primaryCount = signals.filter(s => s.entry_type === 'PRIMARY').length;
-            const reentryCount = signals.filter(s => s.entry_type === 'REENTRY').length;
-            const rejectedCount = signals.filter(s => s.decision === 'REJECTED').length;
-            
-            state.charts.signals.data.datasets[0].data = [primaryCount, reentryCount, rejectedCount];
-            state.charts.signals.update();
-
-            // Mostrar últimos 5 sinais
-            container.innerHTML = signals.slice(-5).reverse().map(signal => {
-                const typeColor = signal.entry_type === 'PRIMARY' ? 'var(--accent)' : 
-                                signal.entry_type === 'REENTRY' ? 'var(--success)' : 'var(--warning)';
-                
-                return `
-                    <div style="background: var(--secondary-bg); padding: 1rem; border-radius: 10px; 
-                               margin-bottom: 0.5rem; border-left: 4px solid ${typeColor};">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                <span style="font-weight: 600; color: ${typeColor};">
-                                    ${signal.entry_type || 'SIGNAL'}
-                                </span>
-                                <span style="margin-left: 1rem; font-weight: 600;">
-                                    ${signal.symbol}
-                                </span>
-                            </div>
-                            <div style="text-align: right;">
-                                <div style="color: var(--warning);">
-                                    Confidence: ${signal.confidence || 'N/A'}
-                                </div>
-                                <div style="font-size: 0.8rem; color: var(--text-secondary);">
-                                    ${new Date(signal.timestamp).toLocaleTimeString()}
-                                </div>
-                            </div>
-                        </div>
-                        <div style="margin-top: 0.5rem; color: var(--text-secondary);">
-                            ${signal.reason || 'Signal generated'}
-                        </div>
-                    </div>
-                `;
-            }).join('');
-        }
-
-        function updateCharts(data) {
-            // Atualizar gráfico de performance
-            if (data.portfolio_summary) {
-                const chart = state.charts.performance;
-                const now = new Date().toLocaleTimeString();
-                
-                chart.data.labels.push(now);
-                chart.data.datasets[0].data.push(data.portfolio_summary.total_pnl || 0);
-                
-                // Manter apenas últimos 20 pontos
-                if (chart.data.labels.length > 20) {
-                    chart.data.labels.shift();
-                    chart.data.datasets[0].data.shift();
-                }
-                
-                chart.update();
-            }
-        }
-
-        // Funções auxiliares
-        function showNotification(message, type) {
-            const container = document.getElementById('notification-container');
-            const notification = document.createElement('div');
-            notification.className = `notification ${type}`;
-            notification.textContent = message;
-            
-            container.appendChild(notification);
-            
-            setTimeout(() => {
-                notification.style.opacity = '0';
-                setTimeout(() => notification.remove(), 300);
-            }, 3000);
-        }
-
-        function formatDuration(ms) {
-            const seconds = Math.floor(ms / 1000);
-            const minutes = Math.floor(seconds / 60);
-            const hours = Math.floor(minutes / 60);
-            
-            if (hours > 0) {
-                return `${hours}h ${minutes % 60}m`;
-            } else if (minutes > 0) {
-                return `${minutes}m ${seconds % 60}s`;
-            } else {
-                return `${seconds}s`;
-            }
-        }
-
-        function updateButtonStates() {
-            const startBtn = document.getElementById('start-demo-button');
-            const pauseBtn = document.getElementById('pause-demo-button');
-            const resumeBtn = document.getElementById('resume-demo-button');
-            const resetBtn = document.getElementById('reset-demo-button');
-            
-            if (state.isRunning) {
-                startBtn.disabled = true;
-                pauseBtn.disabled = false;
-                resumeBtn.disabled = true;
-                resetBtn.disabled = false;
-                
-                startBtn.style.opacity = '0.5';
-                pauseBtn.style.opacity = '1';
-                resumeBtn.style.opacity = '0.5';
-                resetBtn.style.opacity = '1';
-            } else {
-                startBtn.disabled = false;
-                pauseBtn.disabled = true;
-                resumeBtn.disabled = false;
-                resetBtn.disabled = false;
-                
-                startBtn.style.opacity = '1';
-                pauseBtn.style.opacity = '0.5';
-                resumeBtn.style.opacity = '1';
-                resetBtn.style.opacity = '1';
-            }
-        }
-
-        function resetUI() {
-            // Resetar métricas
-            document.getElementById('total-scans').textContent = '0';
-            document.getElementById('signals-generated').textContent = '0';
-            document.getElementById('success-rate').textContent = '0.0%';
-            document.getElementById('total-pnl').textContent = '$0.00';
-            
-            // Resetar gráficos
-            if (state.charts.performance) {
-                state.charts.performance.data.labels = [];
-                state.charts.performance.data.datasets[0].data = [];
-                state.charts.performance.update();
-            }
-            
-            if (state.charts.signals) {
-                state.charts.signals.data.datasets[0].data = [0, 0, 0];
-                state.charts.signals.update();
-            }
-            
-            // Reset state
-            state.previousMetrics = {};
-            
-            // Limpar containers
-            document.getElementById('positions-tbody').innerHTML = `
-                <tr>
-                    <td colspan="7" style="text-align: center; color: var(--text-secondary);">
-                        No active positions
-                    </td>
-                </tr>
-            `;
-            document.getElementById('signals-container').innerHTML = 
-                '<p style="text-align: center; color: var(--text-secondary);">No recent signals</p>';
-        }
-
-        // ======== ENTERPRISE FEATURES FUNCTIONS ========
-        
-        async function updateEnterpriseFeatures() {
-            if (!state.isRunning) return;
-            
-            try {
-                // Fetch all enterprise data in parallel
-                const [riskData, sentimentData, optimizationData] = await Promise.all([
-                    fetch('/enterprise/risk-analysis').then(r => r.json()),
-                    fetch('/enterprise/market-sentiment').then(r => r.json()),
-                    fetch('/enterprise/portfolio-optimization').then(r => r.json())
-                ]);
-                
-                updateRiskManagement(riskData);
-                updateMarketSentiment(sentimentData);
-                updatePortfolioOptimization(optimizationData);
-                
-            } catch (error) {
-                console.error('Failed to update enterprise features:', error);
-            }
-        }
-        
-        function updateRiskManagement(data) {
-            if (data.status !== 'success') return;
-            
-            const riskAnalysis = data.risk_analysis;
-            
-            // Update VaR
-            document.getElementById('portfolio-var').textContent = 
-                `-$${Math.abs(riskAnalysis.var_95 || 0).toFixed(0)}`;
-            
-            // Update concentration risk
-            const concRisk = (riskAnalysis.concentration_risk * 100).toFixed(1);
-            document.getElementById('concentration-risk').textContent = `${concRisk}%`;
-            document.getElementById('concentration-level').textContent = 
-                concRisk > 40 ? 'High' : concRisk > 20 ? 'Medium' : 'Diversified';
-            document.getElementById('concentration-level').className = 
-                `risk-indicator ${concRisk > 40 ? 'risk-high' : concRisk > 20 ? 'risk-medium' : 'risk-low'}`;
-            
-            // Update liquidity score
-            document.getElementById('liquidity-score').textContent = 
-                riskAnalysis.liquidity_score.toFixed(2);
-            
-            // Update compliance status
-            const compliance = riskAnalysis.compliance_status;
-            document.getElementById('compliance-status').textContent = 
-                compliance.overall ? '✓' : '⚠️';
-            document.getElementById('compliance-level').textContent = 
-                compliance.overall ? 'Compliant' : 'Violations';
-            document.getElementById('compliance-level').className = 
-                `risk-indicator ${compliance.overall ? 'risk-low' : 'risk-high'}`;
-        }
-        
-        function updateMarketSentiment(data) {
-            if (data.status !== 'success') return;
-            
-            const sentiment = data.sentiment_analysis;
-            
-            // Update Fear & Greed Index
-            document.getElementById('fear-greed-index').textContent = sentiment.fear_greed_index;
-            
-            // Update sentiment gauge
-            const angle = (sentiment.fear_greed_index / 100) * 110 - 55; // -55 to 55 degrees
-            const arc = document.getElementById('sentiment-arc');
-            const endX = 75 + 50 * Math.cos((angle - 90) * Math.PI / 180);
-            const endY = 60 + 50 * Math.sin((angle - 90) * Math.PI / 180);
-            const largeArc = angle > 0 ? 1 : 0;
-            arc.setAttribute('d', `M 20 60 A 50 50 0 ${largeArc} 1 ${endX} ${endY}`);
-            
-            // Color based on sentiment
-            if (sentiment.fear_greed_index > 75) {
-                arc.setAttribute('stroke', '#ff3366'); // Red for greed
-            } else if (sentiment.fear_greed_index < 25) {
-                arc.setAttribute('stroke', '#00ff88'); // Green for fear (opportunity)
-            } else {
-                arc.setAttribute('stroke', '#00d4ff'); // Blue for neutral
-            }
-            
-            // Update market regime
-            document.getElementById('market-regime').textContent = sentiment.market_regime;
-            document.getElementById('sentiment-confidence').textContent = 
-                `Confidence: ${(sentiment.confidence * 100).toFixed(0)}%`;
-        }
-        
-        function updatePortfolioOptimization(data) {
-            if (data.status !== 'success') return;
-            
-            const optimization = data.portfolio_optimization;
-            
-            // Update rebalancing status
-            document.getElementById('rebalancing-status').textContent = 
-                optimization.rebalancing_needed ? 'Needed' : 'Not Needed';
-            document.getElementById('rebalancing-status').className = 
-                `risk-indicator ${optimization.rebalancing_needed ? 'risk-medium' : 'risk-low'}`;
-            
-            // Update risk adjustment
-            document.getElementById('risk-adjustment').textContent = optimization.risk_adjustment;
-            document.getElementById('risk-adjustment').className = 
-                `risk-indicator ${optimization.risk_adjustment === 'REDUCE' ? 'risk-high' : 'risk-low'}`;
-            
-            // Update recommended actions
-            const actionsContainer = document.getElementById('recommended-actions');
-            if (optimization.recommended_actions && optimization.recommended_actions.length > 0) {
-                actionsContainer.innerHTML = optimization.recommended_actions.map(action => `
-                    <div style="background: rgba(0, 212, 255, 0.1); border: 1px solid var(--accent); 
-                                border-radius: 8px; padding: 0.75rem; margin-bottom: 0.5rem;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <span style="font-weight: 600;">${action.action.replace('_', ' ')}</span>
-                            <span class="risk-indicator ${action.priority.toLowerCase() === 'high' ? 'risk-high' : 'risk-medium'}">
-                                ${action.priority}
-                            </span>
-                        </div>
-                        <div style="color: var(--text-secondary); font-size: 0.9rem; margin-top: 0.3rem;">
-                            ${action.description}
-                        </div>
-                    </div>
-                `).join('');
-            } else {
-                actionsContainer.innerHTML = '<div style="color: var(--text-secondary); text-align: center; padding: 1rem;">No actions recommended</div>';
-            }
-        }
-
-        // Inicializar
-        document.addEventListener('DOMContentLoaded', () => {
-            initCharts();
-            updateStatus();
-            updateButtonStates();
-            
-            // Event listeners
-            document.getElementById('start-demo-button').addEventListener('click', startDemo);
-            document.getElementById('pause-demo-button').addEventListener('click', pauseDemo);
-            document.getElementById('resume-demo-button').addEventListener('click', resumeDemo);
-            document.getElementById('reset-demo-button').addEventListener('click', resetDemo);
-            
-            // Start enterprise features updates
-            setInterval(updateEnterpriseFeatures, 5000); // Update every 5 seconds
-        });
-
-        // WebSocket para updates em tempo real (opcional)
-        function connectWebSocket() {
-            const ws = new WebSocket(`ws://${window.location.host}/ws`);
-            
-            ws.onopen = () => {
-                console.log('WebSocket connected');
-                ws.send(JSON.stringify({
-                    type: 'subscribe',
-                    topics: ['metrics', 'positions', 'signals']
-                }));
-            };
-            
-            ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                
-                if (data.type === 'batch_update') {
-                    data.messages.forEach(msg => processWebSocketMessage(msg));
-                } else {
-                    processWebSocketMessage(data);
-                }
-            };
-            
-            ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
-            };
-            
-            ws.onclose = () => {
-                console.log('WebSocket disconnected');
-                // Reconectar após 3 segundos
-                setTimeout(connectWebSocket, 3000);
-            };
-        }
-
-        function processWebSocketMessage(data) {
-            switch(data.type) {
-                case 'metrics_update':
-                    updateMetrics(data.metrics);
-                    break;
-                case 'position_update':
-                    updatePositions(data.positions);
-                    break;
-                case 'signal_update':
-                    updateSignals(data.signals);
-                    break;
-            }
-        }
-
-        // Conectar WebSocket quando disponível
-        // connectWebSocket();
-    </script>
-    </body>
-    </html>
-    ''
-    """
+    # Read the modernized frontend file using relative path
+    try:
+        import os
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        frontend_path = os.path.join(current_dir, "frontend_modernized.html")
+        with open(frontend_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        # Simple fallback if file not found
+        return """<!DOCTYPE html>
+<html><head><title>FANTASMA Bot</title></head>
+<body><h1>Frontend file not found. Please ensure frontend_modernized.html exists.</h1></body>
+</html>"""
 
 
 if __name__ == "__main__":

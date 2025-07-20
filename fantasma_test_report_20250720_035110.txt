@@ -1,0 +1,67 @@
+🔍 FANTASMA BingX Connectivity & Data Integrity Report
+============================================================
+Data/Hora: 2025-07-20 03:51:10
+Versão: FANTASMA Enterprise v2.0
+
+📊 RESUMO EXECUTIVO
+------------------------------
+Total de Testes: 17
+Testes Aprovados: 9
+Taxa de Sucesso: 52.9%
+Status Geral: ❌ REPROVADO
+
+🔧 CONNECTIVITY
+------------------------------
+✅ ping: success
+   Latência: 1476.52ms
+✅ credentials: valid
+
+🔧 DATA INTEGRITY
+------------------------------
+✅ BTC-USDT: success
+✅ ETH-USDT: success
+✅ BNB-USDT: success
+
+🔧 API ENDPOINTS
+------------------------------
+❌ symbols: error
+   Erro: 0, message='Attempt to decode JSON with unexpected mimetype: text/plain; charset=utf-8', url=URL('https://open-api.bingx.com/openApi/spot/v1/common/symbols')
+✅ ticker: success
+   Latência: 310.83ms
+✅ klines: success
+   Latência: 331.30ms
+✅ depth: success
+   Latência: 341.64ms
+✅ trades: success
+   Latência: 1093.28ms
+
+🔧 DASHBOARD VALIDATION
+------------------------------
+❌ analise_risco: error
+   Erro: Cannot connect to host localhost:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]
+❌ sentimento_mercado: error
+   Erro: Cannot connect to host localhost:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]
+❌ correlacao_mercado: error
+   Erro: Cannot connect to host localhost:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]
+❌ stress_test: error
+   Erro: Cannot connect to host localhost:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]
+❌ metricas_avancadas: error
+   Erro: Cannot connect to host localhost:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]
+
+🔧 PERFORMANCE
+------------------------------
+❌ latency: unknown
+❌ throughput: unknown
+
+💡 RECOMENDAÇÕES
+------------------------------
+❌ Sistema com problemas críticos
+🚨 Verificar credenciais BingX
+🔧 Revisar conectividade de rede
+💻 Verificar se servidor FANTASMA está rodando
+
+🔗 Próximos Passos:
+1. Corrigir problemas identificados
+2. Re-executar testes
+3. Monitorar performance em produção
+4. Implementar alertas automáticos
