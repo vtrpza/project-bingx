@@ -50,11 +50,11 @@ class Settings(BaseSettings):
     # =============================================
     
     # Posicionamento
-    position_size_usd: float = Field(
-        default=10.0,
-        ge=1.0,
-        le=10000.0,
-        description="Tamanho da posição em USD/VST"
+    risk_per_trade_pct: float = Field(
+        default=0.01, # 1% of account balance per trade
+        ge=0.001,
+        le=0.1,
+        description="Porcentagem do saldo da conta a arriscar por trade"
     )
     
     max_positions: int = Field(
@@ -399,13 +399,14 @@ class Settings(BaseSettings):
     def apply_risk_profile(self):
         """Aplica parâmetros baseados no perfil de risco"""
         if self.risk_profile == RiskProfile.SEGURO:
-            self.position_size_usd = min(self.position_size_usd, 15.0)
+            self.risk_per_trade_pct = min(self.risk_per_trade_pct, 0.005) # 0.5%
             self.max_positions = min(self.max_positions, 5)
             self.min_confidence = max(self.min_confidence, 0.7)
             self.stop_loss_pct = max(self.stop_loss_pct, 0.015)
             self.max_portfolio_risk = min(self.max_portfolio_risk, 0.15)
             
         elif self.risk_profile == RiskProfile.AGRESSIVO:
+            self.risk_per_trade_pct = max(self.risk_per_trade_pct, 0.02) # 2%
             self.max_positions = min(self.max_positions * 2, 20)
             self.min_confidence = min(self.min_confidence, 0.4)
             self.stop_loss_pct = min(self.stop_loss_pct, 0.025)

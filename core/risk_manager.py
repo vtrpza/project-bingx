@@ -58,7 +58,8 @@ class RiskManager:
         logger.info("risk_manager_initialized")
     
     async def validate_new_position(self, signal: TradingSignal, 
-                                  current_positions: Dict[str, Position]) -> Tuple[bool, str]:
+                                  current_positions: Dict[str, Position], 
+                                  account_balance: float) -> Tuple[bool, str]:
         """
         Valida se uma nova posição pode ser aberta baseado nos critérios de risco
         Retorna (permitido, motivo)
@@ -72,9 +73,11 @@ class RiskManager:
             total_exposure = sum(pos.size * pos.current_price for pos in current_positions.values())
             max_exposure = settings.max_total_exposure_usd
             
-            position_value = settings.position_size_usd
+            # Calcular o valor da nova posição com base no risco por trade e saldo da conta
+            position_value = account_balance * settings.risk_per_trade_pct
+            
             if total_exposure + position_value > max_exposure:
-                return False, f"Total exposure limit exceeded ({max_exposure} USD)"
+                return False, f"Total exposure limit would be exceeded: {total_exposure:.2f} (current) + {position_value:.2f} (new) > {max_exposure} USD"
             
             # 3. Verificar correlação com posições existentes
             correlation_risk = await self._calculate_correlation_risk(signal.symbol, current_positions)
@@ -365,7 +368,7 @@ class RiskManager:
             "entry_price": entry_price,
             "exit_price": exit_price,
             "timestamp": datetime.now(),
-            "return_pct": (pnl / (entry_price * settings.position_size_usd / entry_price)) * 100
+            "return_pct": 0.0 # Removed for now, needs dynamic calculation based on actual trade size
         }
         
         self.trade_history.append(trade_record)
@@ -417,7 +420,7 @@ class RiskManager:
         """Retorna resumo dos controles de risco ativos"""
         return {
             "max_positions": settings.max_positions,
-            "max_position_size": settings.position_size_usd,
+            
             "stop_loss_pct": settings.stop_loss_pct * 100,
             "max_daily_trades": settings.max_daily_trades,
             "max_correlation_risk": settings.max_correlation_risk,

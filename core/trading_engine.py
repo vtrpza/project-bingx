@@ -300,30 +300,31 @@ class TradingEngine:
             logger.info("fetching_symbols_from_api", reason="no_configured_symbols")
             
             # Usar método específico do exchange para obter todos os símbolos
-            all_symbols = await self.exchange.get_futures_symbols()
-            
+            all_symbols_base_quote = await self.exchange.get_futures_symbols()
+
             # Obter volumes para todos os símbolos
             all_tickers_with_volume = await self.exchange.fetch_futures_tickers_with_volume()
 
             # Filtrar apenas símbolos USDT e excluir "NOT/USDT"
-            currency_suffix = "/USDT"
+            currency_suffix_internal = "-USDT" # Para comparação interna
             filtered_symbols_with_volume = {}
-            for symbol in all_symbols:
-                if symbol.endswith(currency_suffix) and symbol != "NOT/USDT":
-                    volume = all_tickers_with_volume.get(symbol, 0.0) # Get volume, default to 0 if not found
-                    filtered_symbols_with_volume[symbol] = volume
-            
-            # Priorizar BTC/USDT e ETH/USDT
-            prioritized_symbols = []
-            remaining_symbols = []
+            for symbol_base_quote in all_symbols_base_quote:
+                if symbol_base_quote.endswith(currency_suffix_internal) and symbol_base_quote != "NOT-USDT":
+                    # Converter para o formato CCXT para lookup em all_tickers_with_volume
+                    symbol_ccxt = symbol_base_quote.replace('-', '/')
+                    volume = all_tickers_with_volume.get(symbol_ccxt, 0.0)
+                    filtered_symbols_with_volume[symbol_base_quote] = volume # Armazenar no formato BASE-QUOTE
 
-            if "BTC/USDT" in filtered_symbols_with_volume:
-                prioritized_symbols.append("BTC/USDT")
-                del filtered_symbols_with_volume["BTC/USDT"]
-            if "ETH/USDT" in filtered_symbols_with_volume:
-                prioritized_symbols.append("ETH/USDT")
-                del filtered_symbols_with_volume["ETH/USDT"]
-            
+            # Priorizar BTC/USDT e ETH/USDT (devem estar no formato BASE-QUOTE para uso interno)
+            prioritized_symbols_internal = []
+
+            if "BTC-USDT" in filtered_symbols_with_volume:
+                prioritized_symbols_internal.append("BTC-USDT")
+                del filtered_symbols_with_volume["BTC-USDT"]
+            if "ETH-USDT" in filtered_symbols_with_volume:
+                prioritized_symbols_internal.append("ETH-USDT")
+                del filtered_symbols_with_volume["ETH-USDT"]
+
             # Ordenar os símbolos restantes por volume em ordem decrescente
             sorted_remaining_symbols = sorted(
                 filtered_symbols_with_volume.items(), 
@@ -331,18 +332,15 @@ class TradingEngine:
                 reverse=True
             )
             
-            # Combinar as listas
-            final_sorted_symbols_with_slash = prioritized_symbols + [s[0] for s in sorted_remaining_symbols]
-
-            # Converter para o formato "BASE-QUOTE" esperado pelo resto do sistema
-            final_sorted_symbols = [s.replace('/', '-') for s in final_sorted_symbols_with_slash]
+            # Combinar as listas (todos no formato BASE-QUOTE)
+            final_sorted_symbols = prioritized_symbols_internal + [s[0] for s in sorted_remaining_symbols]
 
             # Cache resultado
             self._market_data_cache[cache_key] = final_sorted_symbols
             self._cache_timestamp[cache_key] = time.time()
             
             logger.info("all_symbols_fetched", 
-                        total_symbols=len(all_symbols),
+                        total_symbols=len(all_symbols_base_quote),
                         usdt_symbols=len(final_sorted_symbols),
                         first_10_symbols=final_sorted_symbols[:10]) # Log first 10 for verification
             
@@ -420,6 +418,12 @@ class TradingEngine:
             scan_start = time.time()
             log_scan_event(symbol, success=True)
 
+            # Get current account balance for risk validation
+            current_balance = await self.exchange.get_account_balance()
+            if current_balance is None:
+                logger.warning("could_not_fetch_account_balance", symbol=symbol)
+                return None
+
             # Analyze symbol for signal
             analysis_start = time.time()
             signal = await self._analyze_symbol(symbol)
@@ -449,7 +453,7 @@ class TradingEngine:
                 # Execute if signal is strong enough (confidence >= settings.min_signal_confidence)
                 if signal.confidence >= settings.min_signal_confidence:
                     # Validate with risk manager
-                    allowed, reason = await self.risk_manager.validate_new_position(signal, self.active_positions)
+                    allowed, reason = await self.risk_manager.validate_new_position(signal, self.active_positions, current_balance)
 
                     # Log risk validation
                     log_risk_event(symbol, allowed, reason)
@@ -461,7 +465,7 @@ class TradingEngine:
                         result = await self._execute_signal(signal)
                         exec_duration = int((time.time() - exec_start) * 1000)
 
-                        if result and result.status == "filled":
+                        if result and result.status in ["filled", "closed"]:
                             # Log successful execution
                             log_execution_event(symbol, success=True, order_id=result.order_id, 
                                                 price=result.avg_price if result.avg_price is not None else 0.0, 
@@ -771,7 +775,7 @@ class TradingEngine:
                         confidence=confidence,
                         entry_type="primary",
                         entry_price=float(timeframe_df.iloc[-1]["close"]),
-                        stop_loss=float(timeframe_df.iloc[-1]["close"]) * (1 + settings.stop_loss_pct),
+                        stop_loss=float(timeframe_df.iloc[-1]["close"]) * (1 + settings.stop_loss_pct + 0.001),  # Adicionado buffer
                         take_profit=float(timeframe_df.iloc[-1]["close"]) * (1 - settings.take_profit_pct),
                         signal_type=SignalType.SHORT,
                         price=float(timeframe_df.iloc[-1]["close"]),
@@ -819,8 +823,8 @@ class TradingEngine:
             distance_4h_pct = abs(current_price - center_4h) / center_4h * 100
 
             # Verificar as condições de reentrada (limites reduzidos para maior sensibilidade)
-            reentry_2h_triggered = distance_2h_pct >= 1.5  # Reduzido de 2.0
-            reentry_4h_triggered = distance_4h_pct >= 2.5  # Reduzido de 3.0
+            reentry_2h_triggered = distance_2h_pct >= 2.0  # Corrigido para 2.0
+            reentry_4h_triggered = distance_4h_pct >= 3.0  # Corrigido para 3.0
 
             if not (reentry_2h_triggered or reentry_4h_triggered):
                 return None # Nenhuma condição de reentrada foi atendida
@@ -864,7 +868,7 @@ class TradingEngine:
                 confidence=confidence,
                 entry_type="reentry",
                 entry_price=current_price,
-                stop_loss=current_price * (1 - settings.stop_loss_pct) if side == "BUY" else current_price * (1 + settings.stop_loss_pct),
+                stop_loss=current_price * (1 - settings.stop_loss_pct) if side == "BUY" else current_price * (1 + settings.stop_loss_pct + 0.001), # Adicionado buffer
                 take_profit=current_price * (1 + settings.take_profit_pct) if side == "BUY" else current_price * (1 - settings.take_profit_pct),
                 signal_type=SignalType.LONG if side == "BUY" else SignalType.SHORT,
                 price=current_price,
@@ -962,7 +966,7 @@ class TradingEngine:
             logger.info("place_manual_order_result", result=result.model_dump() if result else None)
             
             if result:
-                if result.status == "filled":
+                if result.status in ["filled", "closed"]:
                     # Criar posição
                     position = Position(
                         symbol=signal.symbol,
@@ -976,6 +980,11 @@ class TradingEngine:
                         stop_price=signal.stop_loss,
                         take_profit_price=signal.take_profit
                     )
+                    
+                    logger.info("position_created_for_risk_check", 
+                                symbol=position.symbol, 
+                                entry_price=position.entry_price, 
+                                stop_price=position.stop_price)
                     
                     self.active_positions[signal.symbol] = position
                     
@@ -1022,15 +1031,23 @@ class TradingEngine:
                 logger.error("symbol_info_not_found", symbol=symbol)
                 return 0.0
             
-            # Calcular quantidade baseada no valor USD configurado
-            usd_amount = settings.position_size_usd
+            # Obter saldo atual da conta
+            account_balance = await self.exchange.get_account_balance()
+            if account_balance <= 0:
+                logger.warning("account_balance_zero_or_negative", balance=account_balance)
+                return 0.0
+
+            # Calcular o valor em USD a ser usado no trade
+            usd_amount = account_balance * settings.risk_per_trade_pct
+            logger.info("dynamic_position_sizing", account_balance=account_balance, risk_pct=settings.risk_per_trade_pct, usd_amount=usd_amount)
+
             raw_quantity = usd_amount / price
             
             # Extrair informações do símbolo
             precision = int(symbol_info.get("quantityPrecision", 3))
-            min_amount = float(symbol_info.get("minAmount", 0.001))
-            min_cost = float(symbol_info.get("minCost", 1.0))
-            step_size = symbol_info.get("stepSize")
+            min_amount = float(symbol_info.get("minAmount") or 0.001)
+            min_cost = float(symbol_info.get("minCost") or 1.0)
+            step_size = float(symbol_info.get("stepSize") or 0.0) # Use 0.0 as default for step_size if None
             
             logger.info("position_calculation_details",
                         symbol=symbol,
@@ -1044,6 +1061,7 @@ class TradingEngine:
             
             # Ajustar quantidade para precisão
             quantity = round(raw_quantity, precision)
+            logger.info("position_size_debug", step="after_precision", quantity=quantity, symbol=symbol)
             
             # Verificar quantidade mínima
             if quantity < min_amount:
@@ -1052,6 +1070,7 @@ class TradingEngine:
                               calculated=quantity,
                               min_required=min_amount)
                 quantity = min_amount
+                logger.info("position_size_debug", step="after_min_amount_adjustment", quantity=quantity, symbol=symbol)
             
             # Verificar valor mínimo (quantidade * preço >= min_cost)
             total_cost = quantity * price
@@ -1063,11 +1082,14 @@ class TradingEngine:
                               original_cost=total_cost,
                               min_cost=min_cost,
                               adjusted_quantity=quantity)
+                logger.info("position_size_debug", step="after_min_cost_adjustment", quantity=quantity, symbol=symbol)
             
             # Ajustar para step_size se fornecido
             if step_size is not None and step_size > 0:
-                quantity = round(quantity / step_size) * step_size
+                original_quantity_before_step = quantity
+                quantity = (round(quantity / step_size) * step_size)
                 quantity = round(quantity, precision)  # Re-round após step_size
+                logger.info("position_size_debug", step="after_step_size_adjustment", original_quantity=original_quantity_before_step, step_size=step_size, quantity=quantity, symbol=symbol)
             
             # Verificação final
             final_cost = quantity * price
@@ -1163,6 +1185,10 @@ class TradingEngine:
                                         symbol=symbol, new_stop=trailing_stop)
                 
                 else:  # short position
+                    logger.info("checking_short_position_risk", 
+                                symbol=symbol, 
+                                current_price=position.current_price, 
+                                stop_price=position.stop_price)
                     if position.current_price >= position.stop_price:
                         positions_to_close.append((symbol, "stop_loss"))
                         continue
@@ -1212,7 +1238,7 @@ class TradingEngine:
             portfolio_metrics = PortfolioMetrics(
                 total_value=total_pnl,
                 total_pnl=total_pnl,
-                total_pnl_pct=(total_pnl / max(settings.position_size_usd * settings.max_positions, 1000)) * 100,
+                total_pnl_pct=(total_pnl / max(self._equity_curve[0] if self._equity_curve else 1000, 1)) * 100,
                 active_positions=len(self.active_positions),
                 max_positions=settings.max_positions,
                 portfolio_heat=0.0,  # Placeholder - requires current_balance
@@ -1329,7 +1355,7 @@ class TradingEngine:
             
             result = await self.place_manual_order(close_order)
             
-            if result and result.status == "filled":
+            if result and result.status in ["filled", "closed"]:
                 # Registrar trade no risk manager
                 self.risk_manager.record_trade(
                     symbol=symbol,

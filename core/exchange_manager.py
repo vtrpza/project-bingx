@@ -26,12 +26,13 @@ class BingXExchangeManager:
     """Gerenciador para BingX Perpetual Futures usando CCXT"""
 
     def _format_symbol_for_ccxt(self, symbol: str) -> str:
-        """Converte o símbolo de BASE-QUOTE para BASE/QUOTE."""
-        return symbol.replace('-', '/')
+        """Converte o símbolo de BASE-QUOTE para BASE/QUOTE:USDT."""
+        return symbol.replace('-', '/') + ':USDT'
 
     def _format_symbol_from_ccxt(self, symbol: str) -> str:
-        """Converte o símbolo de BASE/QUOTE para BASE-QUOTE."""
-        return symbol.replace('/', '-')
+        """Converte o símbolo de BASE/QUOTE:USDT para BASE-QUOTE."""
+        # Remove :USDT primeiro, depois substitui / por -
+        return symbol.replace(':USDT', '').replace('/', '-')
 
     def __init__(self):
         # Configuração para CCXT BingX
@@ -85,7 +86,7 @@ class BingXExchangeManager:
             # Usar ping ao invés de load_markets para teste inicial
             async with self.rate_limiter:
                 server_time = await self.exchange.fetch_time()
-                
+                await self.exchange.load_markets() # Ensure markets are loaded
             logger.info(f"Conexão com a BingX bem-sucedida. Hora do servidor: {server_time}")
             return True
         except Exception as e:
@@ -101,7 +102,16 @@ class BingXExchangeManager:
             # Usando o método correto `fetch_balance`
             balance = await self.exchange.fetch_balance(params={'accountType': 'swap'})
             logger.info("fetched_account_balance", full_balance=balance, currency=currency)
-            return balance.get(currency, {}).get('free', 0.0)
+            if settings.trading_mode == "demo":
+                # Para o modo demo (VST), o saldo está aninhado de forma diferente
+                # Ex: balance['info']['data']['balance']['balance']
+                demo_balance_info = balance.get('info', {}).get('data', {}).get('balance', {})
+                demo_balance_str = demo_balance_info.get('balance', '0.0')
+                logger.info("demo_balance_extraction", raw_string=demo_balance_str, converted_float=float(demo_balance_str))
+                return float(demo_balance_str)
+            else:
+                # Para o modo real (USDT), o saldo está diretamente acessível
+                return balance.get(currency, {}).get('free', 0.0)
 
     @backoff.on_exception(backoff.expo, RateLimitExceeded, max_tries=5, max_time=60)
     async def place_order(self, order: Order) -> OrderResult:
@@ -146,11 +156,11 @@ class BingXExchangeManager:
                 symbol=placed_order.get('symbol'),
                 side=OrderSide(placed_order.get('side').upper()),
                 status=placed_order.get('status').lower(),
-                executed_qty=float(placed_order.get('filled', 0.0)),
-                price=float(placed_order['price']) if placed_order.get('price') is not None else None,
-                avg_price=float(placed_order['average']) if placed_order.get('average') is not None else None,
-                commission=float(placed_order.get('fee', {}).get('cost')) if placed_order.get('fee', {}).get('cost') is not None else None,
-                timestamp=datetime.fromtimestamp(placed_order.get('timestamp', datetime.now().timestamp() * 1000) / 1000)
+                executed_qty=float(placed_order.get('filled') or 0.0),
+                price=float(placed_order.get('price') or 0.0),
+                avg_price=float(placed_order.get('average') or 0.0),
+                commission=float(placed_order.get('fee', {}).get('cost') or 0.0),
+                timestamp=datetime.fromtimestamp(placed_order.get('timestamp', datetime.now().timestamp() * 1000) / 1000) if placed_order.get('timestamp') is not None else datetime.now()
             )
         except Exception as e:
             logger.log_error(e, context=f"Error placing order for {order.symbol}")
@@ -163,7 +173,7 @@ class BingXExchangeManager:
         positions = await self.exchange.fetch_positions()
         parsed_positions = []
         for p in positions:
-            if float(p.get('contracts', 0.0)) != 0:
+            if float(p.get('contracts') or 0.0) != 0:
                 symbol = self._format_symbol_from_ccxt(p.get('info', {}).get('symbol'))
                 side_str = p.get('side', '').upper()
                 # Map to SignalType enum
@@ -176,10 +186,10 @@ class BingXExchangeManager:
                     # For now, we'll skip if it's not explicitly LONG or SHORT
                     continue 
 
-                size = float(p.get('contracts', 0.0))
-                entry_price = float(p.get('entryPrice', 0.0))
-                current_price = float(p.get('markPrice', 0.0))
-                unrealized_pnl = float(p.get('unrealizedPnl', 0.0))
+                size = float(p.get('contracts') or 0.0)
+                entry_price = float(p.get('entryPrice') or 0.0)
+                current_price = float(p.get('markPrice') or 0.0)
+                unrealized_pnl = float(p.get('unrealizedPnl') or 0.0)
                 
                 unrealized_pnl_pct = 0.0
                 if entry_price != 0 and size != 0:
@@ -204,12 +214,14 @@ class BingXExchangeManager:
     async def get_market_data(self, symbol: str) -> Optional[TickerData]:
         """Busca dados de mercado para um símbolo."""
         async with self.rate_limiter:
+            # Converter o símbolo de entrada para o formato esperado pelo CCXT
+            ccxt_symbol = self._format_symbol_for_ccxt(symbol)
             # Usando o método correto `fetch_ticker`
-            ticker = await self.exchange.fetch_ticker(symbol)
+            ticker = await self.exchange.fetch_ticker(ccxt_symbol)
             return TickerData(
-                symbol=self._format_symbol_from_ccxt(symbol), # Converte de volta para BASE-QUOTE para o TradingEngine
-                price=float(ticker.get('last')),
-                volume_24h=float(ticker.get('quoteVolume'))
+                symbol=self._format_symbol_from_ccxt(ticker.get('symbol')), # Converte o símbolo retornado pelo CCXT para BASE-QUOTE
+                price=float(ticker.get('last') or 0.0),
+                volume_24h=float(ticker.get('quoteVolume') or 0.0)
             )
 
     @backoff.on_exception(backoff.expo, RateLimitExceeded, max_tries=5, max_time=60)
@@ -241,6 +253,7 @@ class BingXExchangeManager:
         """Busca tickers de futuros com volume de 24h para todos os símbolos."""
         logger.info("fetching_futures_tickers_with_volume_start")
         async with self.rate_limiter:
+            await self.exchange.load_markets() # Ensure markets are loaded
             tickers = await self.exchange.fetch_tickers() # Busca todos os tickers
         
         futures_volumes = {}
@@ -250,7 +263,7 @@ class BingXExchangeManager:
                self.exchange.markets[symbol].get('type') == 'swap' and \
                self.exchange.markets[symbol].get('active') and \
                ticker_data.get('quoteVolume') is not None:
-                futures_volumes[symbol] = float(ticker_data['quoteVolume'])
+                futures_volumes[symbol] = float(ticker_data['quoteVolume'] or 0.0)
         
         logger.info("fetched_futures_tickers_with_volume_end", count=len(futures_volumes))
         return futures_volumes
@@ -320,7 +333,7 @@ class BingXExchangeManager:
         for symbol_id, market in self.exchange.markets.items():
             logger.info("market_details_in_get_futures_symbols", symbol_id=symbol_id, market_type=market.get('type'), market_active=market.get('active'), market_symbol=market.get('symbol'))
             if market.get('type') == 'swap' and market.get('active'):
-                # Convertendo de volta para o formato BASE-QUOTE para uso interno
+                # Converter para o formato BASE-QUOTE para uso interno, _format_symbol_from_ccxt já remove o :USDT
                 clean_symbol = self._format_symbol_from_ccxt(market['symbol'])
                 futures_symbols.append(clean_symbol)
         logger.info("fetched_futures_symbols", count=len(futures_symbols), symbols=futures_symbols[:10]) # Log first 10

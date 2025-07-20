@@ -49,7 +49,7 @@ class DemoRunner:
         settings.trading_mode = TradingMode.DEMO
         
         # Configurações otimizadas para demo
-        settings.position_size_usd = 10.0  # Posições pequenas para demo
+        
         settings.max_positions = 5  # Máximo 5 posições
         settings.min_confidence = 0.4  # Confiança mínima mais baixa para gerar mais sinais
         settings.scan_interval_seconds = 30  # Scan a cada 30 segundos para gerar mais oportunidades
@@ -61,7 +61,7 @@ class DemoRunner:
         logger.info(f"   • Modo: {settings.trading_mode}")
         logger.info(f"   • Símbolos: {', '.join(self.symbols)}")
         logger.info(f"   • Duração: {self.duration} segundos")
-        logger.info(f"   • Tamanho posição: ${settings.position_size_usd}")
+        logger.info(f"   • Risco por trade: {settings.risk_per_trade_pct*100:.1f}%")
         logger.info(f"   • Máx posições: {settings.max_positions}")
         
     async def run_demo(self):

@@ -34,6 +34,7 @@ from fastapi_cache.decorator import cache
 import logging # Import logging module
 import json # Import json module
 from typing import List, Optional # Import List and Optional
+import numpy as np # Import numpy for type conversion
 
 from config.settings import settings, TradingMode # Import TradingMode
 from core.trading_engine import TradingEngine
@@ -331,9 +332,11 @@ class DemoLogHandler(logging.Handler):
 demo_log_handler = DemoLogHandler()
 
 def serialize_datetime(obj):
-    """Convert datetime objects to ISO format strings for JSON serialization"""
+    """Convert datetime objects and numpy types to JSON serializable format"""
     if isinstance(obj, datetime):
         return obj.isoformat()
+    elif isinstance(obj, (np.bool_, np.integer, np.floating)):
+        return obj.item() # Convert numpy types to native Python types
     elif isinstance(obj, dict):
         return {k: serialize_datetime(v) for k, v in obj.items()}
     elif isinstance(obj, list):
@@ -631,8 +634,7 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("starting_trading_bot", 
                 mode=settings.trading_mode,
-                max_positions=settings.max_positions,
-                position_size=settings.position_size_usd)
+                max_positions=settings.max_positions)
     
     # Initialize trading engine
     trading_engine = TradingEngine(connection_manager)
@@ -708,7 +710,8 @@ async def get_demo_status():
     if not demo_manager:
         return {"status": "error", "message": "Demo manager not initialized."}
     
-    return demo_manager.get_status()
+    status_data = demo_manager.get_status()
+    return serialize_datetime(status_data)
 
 @app.get("/demo/flow")
 async def get_demo_flow():

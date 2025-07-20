@@ -9,9 +9,13 @@ Simple test runner to validate core functionality.
 import sys
 import asyncio
 from pathlib import Path
+from utils.logger import setup_logging
 
 # Add project root to Python path
 sys.path.insert(0, str(Path(__file__).parent))
+
+# Set up logging for debug output
+setup_logging("DEBUG")
 
 async def test_basic_imports():
     """Test basic imports"""
@@ -74,7 +78,7 @@ async def test_risk_manager():
         risk_manager = RiskManager()
         summary = risk_manager.get_risk_summary()
         
-        required_keys = ["max_positions", "max_position_size", "stop_loss_pct"]
+        required_keys = ["max_positions", "stop_loss_pct"]
         for key in required_keys:
             if key not in summary:
                 raise ValueError(f"Missing key: {key}")
