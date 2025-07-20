@@ -16,6 +16,8 @@ import numpy as np
 import structlog
 import ccxt
 
+from utils.async_rate_limiter import AsyncRateLimiter
+
 from config.settings import settings
 from core.exchange_manager import BingXExchangeManager
 from core.risk_manager import RiskManager
@@ -58,6 +60,7 @@ class TradingEngine:
         self._max_drawdown: float = 0.0
         self.successful_order_executions = 0 # New counter for successful orders
         self.pending_orders: Dict[str, PendingOrder] = {}
+        self.api_rate_limiter = AsyncRateLimiter(settings.api_requests_per_second, 1) # 1 second period
         
         # Cache para otimização
         self._market_data_cache = {}
@@ -415,96 +418,97 @@ class TradingEngine:
     
     async def _analyze_symbol_with_execution(self, symbol: str) -> Optional[TradingSignal]:
         """Analisa símbolo e executa imediatamente se encontrar sinal válido"""
-        try:
-            # Log scanning event
-            scan_start = time.time()
-            log_scan_event(symbol, success=True)
+        async with self.api_rate_limiter:
+            try:
+                # Log scanning event
+                scan_start = time.time()
+                log_scan_event(symbol, success=True)
 
-            # Get current account balance for risk validation
-            current_balance = await self.exchange.get_account_balance()
-            if current_balance is None:
-                logger.warning("could_not_fetch_account_balance", symbol=symbol)
-                return None
+                # Get current account balance for risk validation
+                current_balance = await self.exchange.get_account_balance()
+                if current_balance is None:
+                    logger.warning("could_not_fetch_account_balance", symbol=symbol)
+                    return None
 
-            # Analyze symbol for signal
-            analysis_start = time.time()
-            signal = await self._analyze_symbol(symbol)
-            analysis_duration = int((time.time() - analysis_start) * 1000)
+                # Analyze symbol for signal
+                analysis_start = time.time()
+                signal = await self._analyze_symbol(symbol)
+                analysis_duration = int((time.time() - analysis_start) * 1000)
 
-            if signal:  # Signal was generated
-                if signal.confidence >= settings.min_confidence:
-                    # Log analysis success for high confidence signals
-                    log_analysis_event(symbol, signal.confidence, success=True, duration_ms=analysis_duration)
-                    log_signal_event(signal, success=True)
-                    logger.info("signal_detected",
-                                symbol=symbol,
-                                side=signal.side,
-                                confidence=signal.confidence)
-                else:
-                    # Log signal generated but with low confidence
-                    logger.info("signal_low_confidence",
-                                symbol=symbol,
-                                side=signal.side,
-                                confidence=signal.confidence,
-                                min_required=settings.min_confidence,
-                                entry_type=getattr(signal, "entry_type", "primary"))
-                    # Store for later review (low confidence, not immediately executed)
-                    self.recent_signals.append(signal)
-
-                # --- Consolidated Execution Logic ---
-                # Execute if signal is strong enough (confidence >= settings.min_signal_confidence)
-                if signal.confidence >= settings.min_signal_confidence:
-                    # Validate with risk manager
-                    allowed, reason = await self.risk_manager.validate_new_position(signal, self.active_positions, current_balance)
-
-                    # Log risk validation
-                    log_risk_event(symbol, allowed, reason)
-
-                    if allowed:
-                        # Execute immediately
-                        logger.info("attempting_signal_execution", symbol=signal.symbol)
-                        exec_start = time.time()
-                        result = await self._execute_signal(signal)
-                        exec_duration = int((time.time() - exec_start) * 1000)
-
-                        if result and result.status in ["filled", "closed"]:
-                            # Log successful execution
-                            log_execution_event(symbol, success=True, order_id=result.order_id, 
-                                                price=result.avg_price if result.avg_price is not None else 0.0, 
-                                                quantity=result.executed_qty if result.executed_qty is not None else 0.0, 
-                                                side=signal.side, duration_ms=exec_duration)
-                            self.successful_order_executions += 1
-                            logger.info("order_executed_successfully", 
-                                        symbol=symbol, order_id=result.order_id, 
-                                        count=self.successful_order_executions)
-                            
-                            if self.successful_order_executions >= 5:
-                                logger.info("five_orders_placed_successfully", 
-                                            message="Five or more orders have been placed. Please verify on BingX VST dashboard.")
-                            return signal  # Return executed signal
-                        else:
-                            # Log failed execution
-                            log_execution_event(symbol, success=False, error="execution_failed")
+                if signal:  # Signal was generated
+                    if signal.confidence >= settings.min_confidence:
+                        # Log analysis success for high confidence signals
+                        log_analysis_event(symbol, signal.confidence, success=True, duration_ms=analysis_duration)
+                        log_signal_event(signal, success=True)
+                        logger.info("signal_detected",
+                                    symbol=symbol,
+                                    side=signal.side,
+                                    confidence=signal.confidence)
                     else:
-                        logger.info("signal_rejected_by_risk_manager",
-                                    symbol=symbol, reason=reason)
-                # --- End Consolidated Execution Logic ---
+                        # Log signal generated but with low confidence
+                        logger.info("signal_low_confidence",
+                                    symbol=symbol,
+                                    side=signal.side,
+                                    confidence=signal.confidence,
+                                    min_required=settings.min_confidence,
+                                    entry_type=getattr(signal, "entry_type", "primary"))
+                        # Store for later review (low confidence, not immediately executed)
+                        self.recent_signals.append(signal)
 
-            else:  # No signal generated
-                # Log analysis with no signal
-                confidence = signal.confidence if signal else 0.0  # This will be 0.0 if signal is None
-                log_analysis_event(symbol, confidence, success=False, duration_ms=analysis_duration)
+                    # --- Consolidated Execution Logic ---
+                    # Execute if signal is strong enough (confidence >= settings.min_signal_confidence)
+                    if signal.confidence >= settings.min_signal_confidence:
+                        # Validate with risk manager
+                        allowed, reason = await self.risk_manager.validate_new_position(signal, self.active_positions, current_balance)
 
-                if not signal:  # Redundant check, but keeps original logic flow
-                    logger.info("no_signal_generated",
-                                 symbol=symbol,
-                                 reason="conditions_not_met")
+                        # Log risk validation
+                        log_risk_event(symbol, allowed, reason)
 
-            return None  # No signal executed or execution failed
+                        if allowed:
+                            # Execute immediately
+                            logger.info("attempting_signal_execution", symbol=signal.symbol)
+                            exec_start = time.time()
+                            result = await self._execute_signal(signal)
+                            exec_duration = int((time.time() - exec_start) * 1000)
 
-        except Exception as e:
-            logger.log_error(e, context=f"Analyzing symbol {symbol}")
-            return None
+                            if result and result.status in ["filled", "closed"]:
+                                # Log successful execution
+                                log_execution_event(symbol, success=True, order_id=result.order_id, 
+                                                    price=result.avg_price if result.avg_price is not None else 0.0, 
+                                                    quantity=result.executed_qty if result.executed_qty is not None else 0.0, 
+                                                    side=signal.side, duration_ms=exec_duration)
+                                self.successful_order_executions += 1
+                                logger.info("order_executed_successfully", 
+                                            symbol=symbol, order_id=result.order_id, 
+                                            count=self.successful_order_executions)
+                                
+                                if self.successful_order_executions >= 5:
+                                    logger.info("five_orders_placed_successfully", 
+                                                message="Five or more orders have been placed. Please verify on BingX VST dashboard.")
+                                return signal  # Return executed signal
+                            else:
+                                # Log failed execution
+                                log_execution_event(symbol, success=False, error="execution_failed")
+                        else:
+                            logger.info("signal_rejected_by_risk_manager",
+                                        symbol=symbol, reason=reason)
+                    # --- End Consolidated Execution Logic ---
+
+                else:  # No signal generated
+                    # Log analysis with no signal
+                    confidence = signal.confidence if signal else 0.0  # This will be 0.0 if signal is None
+                    log_analysis_event(symbol, confidence, success=False, duration_ms=analysis_duration)
+
+                    if not signal:  # Redundant check, but keeps original logic flow
+                        logger.info("no_signal_generated",
+                                     symbol=symbol,
+                                     reason="conditions_not_met")
+
+                return None  # No signal executed or execution failed
+
+            except Exception as e:
+                logger.log_error(e, context=f"Analyzing symbol {symbol}")
+                return None
     
     def _calculate_batch_delay(self, performance_status: str, batch_size: int) -> float:
         """Calcula delay entre batches baseado na performance"""
