@@ -186,3 +186,23 @@ class DemoRunner:
         except Exception as e:
             logger.error(f"Erro ao gerar relatório final: {e}")
 
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Executa uma demonstração do sistema de trading.")
+    parser.add_argument(
+        "--duration", 
+        type=int, 
+        default=300, 
+        help="Duração da demonstração em segundos (default: 300)"
+    )
+    parser.add_argument(
+        "--symbols", 
+        nargs='*', 
+        type=str, 
+        help="Lista de símbolos para operar (ex: BTC/USDT ETH/USDT)"
+    )
+    
+    args = parser.parse_args()
+    
+    demo_runner = DemoRunner(duration=args.duration, symbols=args.symbols)
+    asyncio.run(demo_runner.run_demo())

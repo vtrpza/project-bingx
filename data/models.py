@@ -26,6 +26,25 @@ class OrderType(str, Enum):
     STOP_LIMIT = "STOP_LIMIT"
 
 
+class OrderState(str, Enum):
+    """Estados da ordem"""
+    PENDING = "PENDING"
+    FILLED = "FILLED"
+    CANCELED = "CANCELED"
+    REJECTED = "REJECTED"
+
+
+class PendingOrder(BaseModel):
+    """Representa uma ordem pendente de preenchimento"""
+    order_id: str
+    symbol: str
+    side: OrderSide
+    quantity: float
+    order_type: OrderType
+    timestamp: datetime
+    client_order_id: Optional[str] = None
+
+
 class SignalType(str, Enum):
     """Tipo de sinal"""
     LONG = "LONG"

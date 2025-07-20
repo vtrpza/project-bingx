@@ -207,6 +207,10 @@ def get_logger(name: str = "trading_bot") -> TradingLogger:
     return TradingLogger(name)
 
 
+# Setup logging when the module is imported
+setup_logging("DEBUG")
+
+
 class PerformanceTimer:
     """Context manager para medir performance (sync e async)"""
     

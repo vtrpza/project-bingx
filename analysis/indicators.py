@@ -83,10 +83,10 @@ class IndicatorCalculator:
     def _rsi_optimized(prices: np.ndarray, period: int = 13) -> np.ndarray:
         """RSI otimizado com NumPy vectorization"""
         n = len(prices)
-        logger.debug("rsi_optimized_input", n=n, period=period)
+        logger.info("rsi_optimized_input", n=n, period=period)
 
         if n <= period: # Need at least period + 1 prices to calculate RSI
-            logger.debug("rsi_optimized_insufficient_data", n=n, period=period)
+            logger.info("rsi_optimized_insufficient_data", n=n, period=period)
             return np.full(n, np.nan)
 
         deltas = np.diff(prices) # size n-1
@@ -133,7 +133,7 @@ class IndicatorCalculator:
     def _sma_optimized(prices: np.ndarray, period: int = 13) -> np.ndarray:
         """SMA otimizada com NumPy"""
         n = len(prices)
-        logger.debug("sma_optimized_input", n=n, period=period)
+        logger.info("sma_optimized_input", n=n, period=period)
         sma = np.full(n, np.nan)
         
         if n >= period:
@@ -388,27 +388,34 @@ class IndicatorCalculator:
         
         try:
             start_time = time.time()
-            logger.debug("apply_all_indicators_start", data_points=len(df), rsi_period=settings.rsi_period, sma_period=settings.sma_period)
+            logger.info("apply_all_indicators_start", data_points=len(df), rsi_period=settings.rsi_period, sma_period=settings.sma_period)
 
             # RSI
             df["rsi"] = cls.calculate_rsi(df["close"], settings.rsi_period)
+            logger.info("rsi_calculated", symbol=df.name if hasattr(df, 'name') else "N/A", rsi_last=df["rsi"].iloc[-1] if not df["rsi"].empty else "N/A")
             
             # SMA (MM1 no sistema original)
             df["sma"] = cls.calculate_sma(df["close"], settings.sma_period)
+            logger.info("sma_calculated", symbol=df.name if hasattr(df, 'name') else "N/A", sma_last=df["sma"].iloc[-1] if not df["sma"].empty else "N/A")
             
             # MM1 (Média Móvel de 1 período - equivale ao próprio preço)
             df["mm1"] = cls.calculate_mm1(df["close"])
+            logger.info("mm1_calculated", symbol=df.name if hasattr(df, 'name') else "N/A", mm1_last=df["mm1"].iloc[-1] if not df["mm1"].empty else "N/A")
             
             # Pivot Center
             if len(df) >= 3:
                 df["center"] = cls.calculate_pivot_center(df)
+                logger.info("center_calculated", symbol=df.name if hasattr(df, 'name') else "N/A", center_last=df["center"].iloc[-1] if not df["center"].empty else "N/A")
             else:
                 df["center"] = np.nan
             
             # Métricas derivadas
             df["distance_to_pivot"] = cls.calculate_distance_to_pivot(df["sma"], df["center"])
+            logger.info("distance_to_pivot_calculated", symbol=df.name if hasattr(df, 'name') else "N/A", distance_last=df["distance_to_pivot"].iloc[-1] if not df["distance_to_pivot"].empty else "N/A")
             df["slope"] = cls.calculate_slope(df["center"], df["sma"])
+            logger.info("slope_calculated", symbol=df.name if hasattr(df, 'name') else "N/A", slope_last=df["slope"].iloc[-1] if not df["slope"].empty else "N/A")
             df["atr"] = cls.calculate_atr(df)
+            logger.info("atr_calculated", symbol=df.name if hasattr(df, 'name') else "N/A", atr_last=df["atr"].iloc[-1] if not df["atr"].empty else "N/A")
             
             # Cache o resultado completo
             indicator_data = {
@@ -451,8 +458,11 @@ class IndicatorCalculator:
             
             # Condições básicas
             rsi_ok = not pd.isna(latest["rsi"]) and (settings.rsi_min - 5) < latest["rsi"] < (settings.rsi_max + 5) # Wider range
+            logger.info("rsi_condition_check", symbol=df.name if hasattr(df, 'name') else "N/A", rsi_value=latest["rsi"], rsi_ok=rsi_ok)
             slope_ok = not pd.isna(latest["slope"]) and latest["slope"] >= -0.2  # More permissive slope
+            logger.info("slope_condition_check", symbol=df.name if hasattr(df, 'name') else "N/A", slope_value=latest["slope"], slope_ok=slope_ok)
             distance_ok = latest["distance_to_pivot"] >= 0.5  # More permissive distance
+            logger.info("distance_condition_check", symbol=df.name if hasattr(df, 'name') else "N/A", distance_value=latest["distance_to_pivot"], distance_ok=distance_ok)
             
             # Cruzamentos (SMA vs Center) com janela de oportunidade
             if len(df) >= 3: # Reduced lookback for window
@@ -465,9 +475,11 @@ class IndicatorCalculator:
 
                 # Condição de compra: SMA está acima do center E um cruzamento para cima ocorreu recentemente
                 long_cross = (current_sma > current_center) and cross_up_window.any()
+                logger.info("long_cross_check", symbol=df.name if hasattr(df, 'name') else "N/A", long_cross=long_cross)
                 
                 # Condição de venda: SMA está abaixo do center E um cruzamento para baixo ocorreu recentemente
                 short_cross = (current_sma < current_center) and cross_down_window.any()
+                logger.info("short_cross_check", symbol=df.name if hasattr(df, 'name') else "N/A", short_cross=short_cross)
             else:
                 long_cross = False
                 short_cross = False

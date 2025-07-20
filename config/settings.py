@@ -223,7 +223,7 @@ class Settings(BaseSettings):
     
     # Timeouts
     request_timeout: int = Field(
-        default=15,
+        default=30,
         ge=5,
         le=60,
         description="Timeout de requisição em segundos"
@@ -307,10 +307,7 @@ class Settings(BaseSettings):
     
     # Símbolos Permitidos
     allowed_symbols: list = Field(
-        default=[
-            "ORBS/USDT", "ZKJ/USDT", "RBTC/USDT", "DOME/USDT", "LABS/USDT", 
-            "FLR/USDT", "RZR/USDT", "EVDC/USDT", "NOT/USDT", "SPYX/USDT"
-        ],
+        default=[],
         description="Lista de símbolos permitidos para trading"
     )
     

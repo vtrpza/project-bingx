@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Any
 import pandas as pd
 import numpy as np
 import structlog
+import ccxt
 
 from config.settings import settings
 from core.exchange_manager import BingXExchangeManager
@@ -56,6 +57,7 @@ class TradingEngine:
         self._equity_curve: List[float] = []
         self._max_drawdown: float = 0.0
         self.successful_order_executions = 0 # New counter for successful orders
+        self.pending_orders: Dict[str, PendingOrder] = {}
         
         # Cache para otimização
         self._market_data_cache = {}
@@ -152,7 +154,7 @@ class TradingEngine:
             positions_data = await self.exchange.get_positions()
             
             # Get account balance to initialize equity curve
-            logger.debug("fetching_account_balance_in_init_state")
+            logger.info("fetching_account_balance_in_init_state")
             account_balance = await self.exchange.get_account_balance()
             self._equity_curve.append(account_balance)
             logger.info("initial_equity_set", balance=account_balance)
@@ -200,6 +202,9 @@ class TradingEngine:
                 
                 # Gerenciar risco das posições
                 await self._manage_position_risk()
+
+                # Monitorar ordens pendentes
+                await self._monitor_pending_orders_loop()
                 
                 # Verificar se deve parar trading por critérios de risco
                 should_stop, reason = await self.risk_manager.should_stop_trading(self.active_positions)
@@ -237,11 +242,10 @@ class TradingEngine:
         
         try:
             # Lista de TODOS os símbolos BingX Futures (~550)
-            all_symbols = await self._get_all_bingx_symbols()
-            valid_symbols = await self._filter_valid_symbols(all_symbols)
+            valid_symbols = await self._get_all_bingx_symbols()
             
             logger.info("parallel_scan_started", 
-                        total_symbols=len(all_symbols),
+                        total_symbols=len(valid_symbols),
                         valid_symbols=len(valid_symbols),
                         allowed_symbols=settings.allowed_symbols[:10])  # Primeiros 10 símbolos permitidos
             
@@ -298,79 +302,52 @@ class TradingEngine:
             # Usar método específico do exchange para obter todos os símbolos
             all_symbols = await self.exchange.get_futures_symbols()
             
-            # Filtrar apenas símbolos USDT (não VST para ter maior alcance)
+            # Obter volumes para todos os símbolos
+            all_tickers_with_volume = await self.exchange.fetch_futures_tickers_with_volume()
+
+            # Filtrar apenas símbolos USDT e excluir "NOT/USDT"
             currency_suffix = "/USDT"
-            filtered_symbols = [
-                symbol for symbol in all_symbols
-                if symbol.endswith(currency_suffix)
-            ]
+            filtered_symbols_with_volume = {}
+            for symbol in all_symbols:
+                if symbol.endswith(currency_suffix) and symbol != "NOT/USDT":
+                    volume = all_tickers_with_volume.get(symbol, 0.0) # Get volume, default to 0 if not found
+                    filtered_symbols_with_volume[symbol] = volume
             
-            # Usar subset se muitos símbolos para evitar rate limiting
-            if len(filtered_symbols) > 20:
-                # Usar apenas top 20 símbolos mais populares
-                popular_symbols = [
-                    "ORBS/USDT", "ZKJ/USDT", "RBTC/USDT", "DOME/USDT", "LABS/USDT", 
-                    "FLR/USDT", "RZR/USDT", "EVDC/USDT", "NOT/USDT", "SPYX/USDT"
-                ]
-                filtered_symbols = [s for s in popular_symbols if s in filtered_symbols]
-                
-                logger.info("using_popular_symbols_subset", 
-                           total_available=len(all_symbols),
-                           subset_used=len(filtered_symbols))
+            # Priorizar BTC/USDT e ETH/USDT
+            prioritized_symbols = []
+            remaining_symbols = []
+
+            if "BTC/USDT" in filtered_symbols_with_volume:
+                prioritized_symbols.append("BTC/USDT")
+                del filtered_symbols_with_volume["BTC/USDT"]
+            if "ETH/USDT" in filtered_symbols_with_volume:
+                prioritized_symbols.append("ETH/USDT")
+                del filtered_symbols_with_volume["ETH/USDT"]
             
+            # Ordenar os símbolos restantes por volume em ordem decrescente
+            sorted_remaining_symbols = sorted(
+                filtered_symbols_with_volume.items(), 
+                key=lambda item: item[1], 
+                reverse=True
+            )
+            
+            # Combinar as listas
+            final_sorted_symbols = prioritized_symbols + [s[0] for s in sorted_remaining_symbols]
+
             # Cache resultado
-            self._market_data_cache[cache_key] = filtered_symbols
+            self._market_data_cache[cache_key] = final_sorted_symbols
             self._cache_timestamp[cache_key] = time.time()
             
             logger.info("all_symbols_fetched", 
                         total_symbols=len(all_symbols),
-                        usdt_symbols=len(filtered_symbols))
+                        usdt_symbols=len(final_sorted_symbols),
+                        first_10_symbols=final_sorted_symbols[:10]) # Log first 10 for verification
             
-            return filtered_symbols
+            return final_sorted_symbols
             
         except Exception as e:
             logger.log_error(e, context="Getting all BingX symbols")
-            return settings.allowed_symbols  # Fallback para símbolos configurados
-
-    async def _filter_valid_symbols(self, symbols: List[str]) -> List[str]:
-        """Filtra símbolos para garantir que eles estão na lista de permissões."""
-        if not settings.allowed_symbols:
-            logger.warning("Nenhum símbolo permitido configurado. O scan não será executado.")
-            return []
-
-        # Se symbols está vazio (rate limiting), usar símbolos permitidos como fallback
-        if not symbols:
-            logger.warning("symbol_list_empty_using_fallback", 
-                          reason="possible_rate_limiting",
-                          fallback_symbols=settings.allowed_symbols[:5])
-            
-            # Converter formato BTCUSDT para BTC/USDT
-            fallback_symbols = []
-            for symbol in settings.allowed_symbols[:5]:  # Primeiros 5 símbolos
-                if symbol.endswith('USDT'):
-                    base = symbol[:-4]  # Remove USDT
-                    fallback_symbols.append(f"{base}/USDT")
-            
-            logger.info("symbol_filtering_completed",
-                        total_symbols=0,
-                        valid_symbols=len(fallback_symbols),
-                        fallback_used=True)
-            
-            return fallback_symbols
-
-        # A lista `symbols` já está no formato correto (ex: 'BTC/USDT')
-        # A lista `settings.allowed_symbols` está no formato 'BTC-USDT'
-        # Precisamos comparar os dois formatos.
-
-        allowed_set = set(settings.allowed_symbols)
-        valid_symbols = [s for s in symbols if s in allowed_set]
-
-        logger.info("symbol_filtering_completed",
-                    total_symbols=len(symbols),
-                    valid_symbols=len(valid_symbols),
-                    fallback_used=False)
-
-        return valid_symbols
+            return [] # Fallback para lista vazia em caso de erro grave
 
     async def _validate_symbol(self, symbol: str) -> bool:
         """Valida se um símbolo está ativo e tradeable"""
@@ -381,7 +358,13 @@ class TradingEngine:
                 return False
             
             # Tentar obter ticker para confirmar que está ativo
-            ticker = await self.exchange.get_ticker(symbol)
+            # Usar o símbolo completo retornado por get_symbol_info para o ticker
+            full_symbol_for_ticker = symbol_info.get("symbol")
+            if not full_symbol_for_ticker:
+                logger.warning("full_symbol_for_ticker_not_found", symbol=symbol)
+                return False
+
+            ticker = await self.exchange.get_ticker(full_symbol_for_ticker)
             if not ticker or float(ticker.get("price", 0)) <= 0:
                 return False
             
@@ -470,6 +453,7 @@ class TradingEngine:
 
                     if allowed:
                         # Execute immediately
+                        logger.info("attempting_signal_execution", symbol=signal.symbol)
                         exec_start = time.time()
                         result = await self._execute_signal(signal)
                         exec_duration = int((time.time() - exec_start) * 1000)
@@ -507,12 +491,6 @@ class TradingEngine:
                                  symbol=symbol,
                                  reason="conditions_not_met")
 
-            self.scan_data.append({
-                'symbol': symbol,
-                'signal': signal.model_dump() if signal else None,
-                'confidence': signal.confidence if signal else 0.0,
-                'timestamp': datetime.now().isoformat()
-            })
             return None  # No signal executed or execution failed
 
         except Exception as e:
@@ -544,6 +522,54 @@ class TradingEngine:
         """Calcula delay fixo para evitar rate limiting"""
         # Delay fixo conservador para evitar rate limiting
         return 1.0  # 1 segundo entre calls
+
+    async def _monitor_pending_orders_loop(self):
+        """Monitora ordens pendentes e atualiza seu status."""
+        if not self.pending_orders:
+            return
+
+        orders_to_remove = []
+        for order_id, pending_order in list(self.pending_orders.items()):
+            try:
+                # Consultar status da ordem na exchange
+                updated_order = await self.exchange.fetch_order(order_id, pending_order.symbol)
+                
+                if updated_order:
+                    status = updated_order.get('status').lower()
+                    if status == "filled":
+                        # Ordem preenchida, criar posição ativa
+                        position_size = float(updated_order.get('filled', 0.0))
+                        entry_price = float(updated_order.get('average', updated_order.get('price', 0.0)))
+
+                        position = Position(
+                            symbol=pending_order.symbol,
+                            side=pending_order.side,
+                            size=position_size,
+                            entry_price=entry_price,
+                            current_price=entry_price,
+                            unrealized_pnl=0.0,
+                            unrealized_pnl_pct=0.0,
+                            entry_time=pending_order.timestamp,
+                            stop_price=None, # Stop/TP serão definidos pelo sinal original ou gerenciador de risco
+                            take_profit_price=None
+                        )
+                        self.active_positions[pending_order.symbol] = position
+                        logger.info("pending_order_filled", order_id=order_id, symbol=pending_order.symbol)
+                        orders_to_remove.append(order_id)
+
+                    elif status == "canceled" or status == "rejected":
+                        logger.info("pending_order_canceled_or_rejected", order_id=order_id, symbol=pending_order.symbol, status=status)
+                        orders_to_remove.append(order_id)
+                    else:
+                        logger.info("pending_order_still_pending", order_id=order_id, symbol=pending_order.symbol, status=status)
+                else:
+                    logger.warning("failed_to_fetch_pending_order_status", order_id=order_id, symbol=pending_order.symbol)
+
+            except Exception as e:
+                logger.log_error(e, context=f"Error monitoring pending order {order_id} for {pending_order.symbol}")
+
+        for order_id in orders_to_remove:
+            del self.pending_orders[order_id]
 
     async def _get_tradeable_symbols(self) -> List[str]:
         """Obtém lista de símbolos tradeable (para compatibilidade)"""
@@ -577,11 +603,11 @@ class TradingEngine:
     
     async def _analyze_symbol(self, symbol: str) -> Optional[TradingSignal]:
         """Analisa um símbolo para oportunidades de trading"""
-        logger.debug("analyze_symbol_entry", symbol=symbol)
+        logger.info("analyze_symbol_entry", symbol=symbol)
         try:
             # Obter dados históricos (otimizado para rate limiting)
             klines_5m = await self.exchange.get_klines(symbol, "5m", 800)
-            logger.debug("klines_fetched", symbol=symbol, klines_len=len(klines_5m) if klines_5m else 0)
+            logger.info("klines_fetched", symbol=symbol, klines_len=len(klines_5m) if klines_5m else 0)
             
             if klines_5m is None or (hasattr(klines_5m, 'empty') and klines_5m.empty) or len(klines_5m) < 50:
                 logger.info("klines_insufficient_data", symbol=symbol, klines_len=len(klines_5m) if klines_5m else 0)
@@ -593,7 +619,7 @@ class TradingEngine:
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 df_5m[col] = pd.to_numeric(df_5m[col], errors='coerce')
             df_5m = df_5m.dropna() # Drop rows with NaN after coercion
-            logger.debug("df_5m_processed", symbol=symbol, df_5m_len=len(df_5m))
+            logger.info("df_5m_processed", symbol=symbol, df_5m_len=len(df_5m))
 
             if df_5m.empty or len(df_5m) < 50: # Re-check after cleaning
                 logger.info("klines_insufficient_data_after_cleaning", symbol=symbol, klines_len=len(df_5m))
@@ -612,7 +638,7 @@ class TradingEngine:
                 for col in ['open', 'high', 'low', 'close', 'volume']:
                     df_t[col] = pd.to_numeric(df_t[col], errors='coerce')
                 df_t.dropna(inplace=True) # Drop rows with NaN after coercion
-            logger.debug("timeframes_processed", symbol=symbol, df_2h_len=len(df_2h), df_4h_len=len(df_4h))
+            logger.info("timeframes_processed", symbol=symbol, df_2h_len=len(df_2h), df_4h_len=len(df_4h))
             
             min_required_data_points = max(settings.rsi_period + 1, settings.sma_period)
             if df_2h.empty or df_4h.empty or len(df_2h) < min_required_data_points or len(df_4h) < min_required_data_points: # Ensure enough data for indicators
@@ -622,16 +648,17 @@ class TradingEngine:
             # Aplicar indicadores técnicos
             df_2h = IndicatorCalculator.apply_all_indicators(df_2h)
             df_4h = IndicatorCalculator.apply_all_indicators(df_4h)
-            logger.debug("indicators_applied", symbol=symbol)
+            logger.info("indicators_applied", symbol=symbol)
             
             # Check if indicators were applied successfully and are not NaN
             if "rsi" not in df_2h.columns or pd.isna(df_2h["rsi"].iloc[-1]) or \
                "rsi" not in df_4h.columns or pd.isna(df_4h["rsi"].iloc[-1]):
                 logger.warning("indicator_calculation_failed_or_nan", symbol=symbol)
+                analysis_successful = True # Analysis completed, but no signal
                 return None
 
-            # Log dos valores dos indicadores para debug
-            logger.debug("indicator_values", 
+            # Log dos valores dos indicadores para info
+            logger.info("indicator_values", 
                         symbol=symbol,
                         rsi_2h=df_2h.iloc[-1]["rsi"] if "rsi" in df_2h.columns and not pd.isna(df_2h.iloc[-1]["rsi"]) else "N/A",
                         sma_2h=df_2h.iloc[-1]["sma"] if "sma" in df_2h.columns and not pd.isna(df_2h.iloc[-1]["sma"]) else "N/A",
@@ -648,8 +675,8 @@ class TradingEngine:
             conditions_2h = IndicatorCalculator.validate_signal_conditions(df_2h)
             conditions_4h = IndicatorCalculator.validate_signal_conditions(df_4h)
             
-            # Log das condições para debug
-            logger.debug("signal_conditions_evaluated", 
+            # Log das condições para info
+            logger.info("signal_conditions_evaluated", 
                         symbol=symbol,
                         conditions_2h=conditions_2h,
                         conditions_4h=conditions_4h)
@@ -657,16 +684,16 @@ class TradingEngine:
             # SISTEMA SEQUENCIAL: Primeiro Primary Entry, depois Reentry
             signal = None
             
-            logger.debug("attempting_primary_entry", symbol=symbol)
+            logger.info("attempting_primary_entry", symbol=symbol)
             # ETAPA 1: ENTRADA PRINCIPAL (Primary Entry) - usar timeframe 4h como principal
             signal = self._try_primary_entry(df_2h, df_4h, conditions_2h, conditions_4h, symbol)
             
             # ETAPA 2: REENTRADA (Reentry) - apenas se não houve sinal principal
             if not signal:
-                logger.debug("no_primary_entry_signal_found_attempting_reentry", symbol=symbol)
+                logger.info("no_primary_entry_signal_found_attempting_reentry", symbol=symbol)
                 signal = self._try_reentry(df_2h, df_4h, symbol)
             else:
-                logger.debug("primary_entry_signal_found", symbol=symbol, signal_type=signal.signal_type)
+                logger.info("primary_entry_signal_found", symbol=symbol, signal_type=signal.signal_type)
             
             # Log final do resultado
             if signal:
@@ -681,12 +708,15 @@ class TradingEngine:
                            conditions_2h_summary=f"rsi_ok={conditions_2h.get('rsi_ok', False)}, slope_ok={conditions_2h.get('slope_ok', False)}, distance_ok={conditions_2h.get('distance_ok', False)}, long_cross={conditions_2h.get('long_cross', False)}, short_cross={conditions_2h.get('short_cross', False)}",
                            conditions_4h_summary=f"rsi_ok={conditions_4h.get('rsi_ok', False)}, slope_ok={conditions_4h.get('slope_ok', False)}, distance_ok={conditions_4h.get('distance_ok', False)}, long_cross={conditions_4h.get('long_cross', False)}, short_cross={conditions_4h.get('short_cross', False)}")
             
-            logger.debug("analyze_symbol_end", symbol=symbol, signal_found=bool(signal))
+            logger.info("analyze_symbol_end", symbol=symbol, signal_found=bool(signal))
             return signal
             
+        except ccxt.BadSymbol as e:
+            logger.warning("bad_symbol_skipped", symbol=symbol, error=str(e))
+            return None
         except Exception as e:
             logger.log_error(e, context=f"Analyzing symbol {symbol}")
-            logger.debug("analyze_symbol_error", symbol=symbol, error=str(e))
+            logger.info("analyze_symbol_error", symbol=symbol, error=str(e))
             return None
     
     def _try_primary_entry(self, df_2h: pd.DataFrame, df_4h: pd.DataFrame,
@@ -778,7 +808,7 @@ class TradingEngine:
             center_4h = float(df_4h["center"].iloc[-1])
 
             if pd.isna(center_2h) or pd.isna(center_4h) or center_2h == 0 or center_4h == 0:
-                logger.debug("reentry_check_failed_invalid_center", symbol=symbol, center_2h=center_2h, center_4h=center_4h)
+                logger.info("reentry_check_failed_invalid_center", symbol=symbol, center_2h=center_2h, center_4h=center_4h)
                 return None
 
             # Calcular a distância percentual do preço atual para a 'center' de cada timeframe
@@ -928,30 +958,49 @@ class TradingEngine:
             result = await self.place_manual_order(order)
             logger.info("place_manual_order_result", result=result.model_dump() if result else None)
             
-            if result and result.status == "filled":
-                # Criar posição
-                position = Position(
-                    symbol=signal.symbol,
-                    side=signal.side,
-                    size=position_size,
-                    entry_price=result.avg_price or signal.entry_price,
-                    current_price=signal.entry_price,
-                    unrealized_pnl=0.0,
-                    unrealized_pnl_pct=0.0,
-                    entry_time=datetime.now(),
-                    stop_price=signal.stop_loss,
-                    take_profit_price=signal.take_profit
-                )
-                
-                self.active_positions[signal.symbol] = position
-                
-                logger.info("signal_executed",
-                            symbol=signal.symbol,
-                            side=signal.side,
-                            confidence=signal.confidence,
-                            size=position_size)
-            
-            return result
+            if result:
+                if result.status == "filled":
+                    # Criar posição
+                    position = Position(
+                        symbol=signal.symbol,
+                        side=signal.side,
+                        size=position_size,
+                        entry_price=result.avg_price or signal.entry_price,
+                        current_price=signal.entry_price,
+                        unrealized_pnl=0.0,
+                        unrealized_pnl_pct=0.0,
+                        entry_time=datetime.now(),
+                        stop_price=signal.stop_loss,
+                        take_profit_price=signal.take_profit
+                    )
+                    
+                    self.active_positions[signal.symbol] = position
+                    
+                    logger.info("signal_executed",
+                                symbol=signal.symbol,
+                                side=signal.side,
+                                confidence=signal.confidence,
+                                size=position_size)
+                    return result
+                elif result.status == "pending":
+                    # Adicionar à lista de ordens pendentes
+                    pending_order = PendingOrder(
+                        order_id=result.order_id,
+                        symbol=result.symbol,
+                        side=result.side,
+                        quantity=result.executed_qty, # executed_qty pode ser 0 para pending
+                        order_type=order.order_type,
+                        timestamp=result.timestamp
+                    )
+                    self.pending_orders[result.order_id] = pending_order
+                    logger.info("order_pending", order_id=result.order_id, symbol=result.symbol)
+                    return result
+                else:
+                    logger.warning("order_not_filled_or_pending", order_id=result.order_id, status=result.status)
+                    return None
+            else:
+                logger.warning("order_placement_failed_no_result", symbol=signal.symbol)
+                return None
             
         except Exception as e:
             logger.log_error(e, context=f"Executing signal for {signal.symbol}")
@@ -980,7 +1029,7 @@ class TradingEngine:
             min_cost = float(symbol_info.get("minCost", 1.0))
             step_size = symbol_info.get("stepSize")
             
-            logger.debug("position_calculation_details",
+            logger.info("position_calculation_details",
                         symbol=symbol,
                         price=price,
                         usd_amount=usd_amount,
@@ -1062,7 +1111,7 @@ class TradingEngine:
                     position.pnl = pnl
                     position.pnl_pct = pnl_pct
                     
-                    logger.debug("position_updated", 
+                    logger.info("position_updated", 
                                symbol=symbol, 
                                current_price=current_price,
                                pnl=pnl, 
@@ -1118,6 +1167,23 @@ class TradingEngine:
                     if position.take_profit_price and position.current_price <= position.take_profit_price:
                         positions_to_close.append((symbol, "take_profit"))
                         continue
+                    
+                    # Verificar break even para posições de venda
+                    if (position.unrealized_pnl_pct >= settings.break_even_pct and 
+                        position.stop_price > position.entry_price):
+                        # Mover stop loss para break even
+                        position.stop_price = position.entry_price
+                        logger.info("stop_loss_moved_to_break_even_short", 
+                                    symbol=symbol)
+
+                    # Verificar trailing stop para posições de venda
+                    if (position.unrealized_pnl_pct >= settings.trailing_trigger_pct and
+                        position.current_price < position.entry_price * (1 - 0.02)):  # 2% abaixo entrada
+                        trailing_stop = position.current_price * (1 + settings.stop_loss_pct)
+                        if trailing_stop < position.stop_price:
+                            position.stop_price = trailing_stop
+                            logger.info("trailing_stop_updated_short", 
+                                        symbol=symbol, new_stop=trailing_stop)
             
             # Fechar posições que atingiram critérios
             for symbol, reason in positions_to_close:

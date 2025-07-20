@@ -209,6 +209,37 @@ class BingXExchangeManager:
             # Usando o método correto `fetch_ohlcv`
             return await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
 
+    @backoff.on_exception(backoff.expo, RateLimitExceeded, max_tries=5, max_time=60)
+    async def fetch_order(self, order_id: str, symbol: str) -> Optional[Dict[str, Any]]:
+        """Busca o status de uma ordem específica."""
+        try:
+            async with self.rate_limiter:
+                order = await self.exchange.fetch_order(order_id, symbol)
+                logger.info("fetched_order_status", order_id=order_id, symbol=symbol, status=order.get('status'))
+                return order
+        except Exception as e:
+            logger.log_error(e, context=f"Error fetching order {order_id} for {symbol}")
+            return None
+
+    @backoff.on_exception(backoff.expo, RateLimitExceeded, max_tries=5, max_time=60)
+    async def fetch_futures_tickers_with_volume(self) -> Dict[str, float]:
+        """Busca tickers de futuros com volume de 24h para todos os símbolos."""
+        logger.info("fetching_futures_tickers_with_volume_start")
+        async with self.rate_limiter:
+            tickers = await self.exchange.fetch_tickers() # Busca todos os tickers
+        
+        futures_volumes = {}
+        for symbol, ticker_data in tickers.items():
+            # Certificar que é um símbolo de futuros e tem volume
+            if symbol in self.exchange.markets and \
+               self.exchange.markets[symbol].get('type') == 'swap' and \
+               self.exchange.markets[symbol].get('active') and \
+               ticker_data.get('quoteVolume') is not None:
+                futures_volumes[symbol] = float(ticker_data['quoteVolume'])
+        
+        logger.info("fetched_futures_tickers_with_volume_end", count=len(futures_volumes))
+        return futures_volumes
+
     def get_performance_metrics(self) -> Dict[str, Any]:
         """Retorna métricas de desempenho (placeholder)."""
         # A biblioteca bingx-python não expõe métricas de latência/rate-limit diretamente.
@@ -225,29 +256,41 @@ class BingXExchangeManager:
         try:
             async with self.rate_limiter:
                 await self.exchange.load_markets()  # Garante que os mercados estão carregados
-            logger.debug("markets_loaded", symbol=symbol, markets_count=len(self.exchange.markets))
+            logger.info("markets_loaded", symbol=symbol, markets_count=len(self.exchange.markets))
             if symbol in self.exchange.markets:
-                logger.debug("symbol_found_in_markets_dict", symbol=symbol)
+                logger.info("symbol_found_in_markets_dict", symbol=symbol)
             else:
                 logger.warning("symbol_not_found_in_markets_dict", symbol=symbol, available_markets=list(self.exchange.markets.keys())[:10]) # Log first 10 for brevity
 
-            market = self.exchange.market(symbol)
-            if market:
-                logger.debug("market_found", symbol=symbol, market_data=market)
-                limits = market.get('limits', {})
+            # Tentar encontrar o mercado usando o símbolo original ou com o sufixo :USDT
+            found_market = None
+            # Tentar encontrar o mercado por correspondência exata ou com o sufixo :USDT
+            if symbol in self.exchange.markets:
+                found_market = self.exchange.markets[symbol]
+                logger.info("symbol_found_in_markets_dict", symbol=symbol)
+            elif symbol + ":USDT" in self.exchange.markets:
+                found_market = self.exchange.markets[symbol + ":USDT"]
+                logger.info("symbol_found_with_suffix", symbol=symbol, original_symbol=symbol + ":USDT")
+            else:
+                logger.warning("symbol_not_found_in_markets_dict", symbol=symbol, available_markets=list(self.exchange.markets.keys())[:10])
+
+            if found_market:
+                logger.info("market_object_after_lookup", symbol=symbol, market_data=found_market)
+                logger.info("market_found", symbol=symbol, market_data=found_market)
+                limits = found_market.get('limits', {})
                 amount_limits = limits.get('amount', {})
                 cost_limits = limits.get('cost', {})
                 
                 return {
-                    "symbol": market.get('symbol'),
-                    "status": "TRADING" if market.get('active') else "BREAK",
-                    "quantityPrecision": market.get('precision', {}).get('amount', 3),
-                    "pricePrecision": market.get('precision', {}).get('price', 2),
-                    "minAmount": amount_limits.get('min', 0.001),  # Quantidade mínima
+                    "symbol": found_market.get('symbol'),
+                    "status": "TRADING" if found_market.get('active') else "BREAK",
+                    "quantityPrecision": found_market.get('precision', {}).get('amount', 3),
+                    "pricePrecision": found_market.get('precision', {}).get('price', 2),
+                    "minAmount": amount_limits.get('min', 0.001),
                     "maxAmount": amount_limits.get('max'),
-                    "minCost": cost_limits.get('min', 1.0),  # Valor mínimo em USDT
+                    "minCost": cost_limits.get('min', 1.0),
                     "maxCost": cost_limits.get('max'),
-                    "stepSize": amount_limits.get('step'),  # Incremento permitido
+                    "stepSize": amount_limits.get('step'),
                 }
             else:
                 logger.warning("market_not_found_in_exchange", symbol=symbol)
@@ -260,14 +303,16 @@ class BingXExchangeManager:
     @cache(expire=3600) # Cache por 1 hora, símbolos não mudam com frequência
     async def get_futures_symbols(self) -> List[str]:
         """Obtém todos os símbolos de futuros disponíveis na BingX."""
-        logger.debug("fetching_futures_symbols_start")
+        logger.info("fetching_futures_symbols_start")
         async with self.rate_limiter:
             await self.exchange.load_markets()
         logger.info("markets_loaded_in_get_futures_symbols", markets_count=len(self.exchange.markets), sample_markets=list(self.exchange.markets.keys())[:10])
         futures_symbols = []
         for symbol_id, market in self.exchange.markets.items():
+            logger.info("market_details_in_get_futures_symbols", symbol_id=symbol_id, market_type=market.get('type'), market_active=market.get('active'), market_symbol=market.get('symbol'))
             if market.get('type') == 'swap' and market.get('active'):
-                futures_symbols.append(market['symbol'])
+                clean_symbol = market['symbol'].replace(':USDT', '')
+                futures_symbols.append(clean_symbol)
         logger.info("fetched_futures_symbols", count=len(futures_symbols), symbols=futures_symbols[:10]) # Log first 10
         return futures_symbols
 
