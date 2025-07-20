@@ -332,7 +332,10 @@ class TradingEngine:
             )
             
             # Combinar as listas
-            final_sorted_symbols = prioritized_symbols + [s[0] for s in sorted_remaining_symbols]
+            final_sorted_symbols_with_slash = prioritized_symbols + [s[0] for s in sorted_remaining_symbols]
+
+            # Converter para o formato "BASE-QUOTE" esperado pelo resto do sistema
+            final_sorted_symbols = [s.replace('/', '-') for s in final_sorted_symbols_with_slash]
 
             # Cache resultado
             self._market_data_cache[cache_key] = final_sorted_symbols
