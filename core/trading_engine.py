@@ -414,6 +414,10 @@ class TradingEngine:
     async def _analyze_symbol_with_execution(self, symbol: str) -> Optional[TradingSignal]:
         """Analisa símbolo e executa imediatamente se encontrar sinal válido"""
         try:
+            # Se já houver posições ativas ou ordens pendentes, não abre novas ordens
+            if self.active_positions or self.pending_orders:
+                logger.info("existing_order_or_position_found", symbol=symbol, active_positions=len(self.active_positions), pending_orders=len(self.pending_orders))
+                return None
             # Log scanning event
             scan_start = time.time()
             log_scan_event(symbol, success=True)
