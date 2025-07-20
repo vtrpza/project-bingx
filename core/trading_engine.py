@@ -380,44 +380,42 @@ class TradingEngine:
         executed_signals = []
         
         # Processar símbolos em batches controlados
-        for i in range(0, len(symbols), 1): # Usar um batch size fixo de 1 para evitar rate limit
+        # Usar um batch size maior para paralelização, mas ainda respeitando limites
+        batch_size = 10 # Ajuste conforme a capacidade da API e do sistema
+        
+        for i in range(0, len(symbols), batch_size):
             # Break if we've reached max positions
             if len(self.active_positions) >= settings.max_positions:
                 logger.info("max_positions_reached", 
                             current_positions=len(self.active_positions))
                 break
             
-            batch_symbols = symbols[i:i + 4]
+            current_batch_symbols = symbols[i:i + batch_size]
             
             # Filtrar símbolos que já têm posições
-            available_symbols = [s for s in batch_symbols if s not in self.active_positions]
+            available_symbols_in_batch = [s for s in current_batch_symbols if s not in self.active_positions]
             
-            if not available_symbols:
+            if not available_symbols_in_batch:
                 continue
             
-            # Processar batch sequencialmente para evitar rate limiting
-            for symbol in available_symbols:
-                try:
-                    result = await self._analyze_symbol_with_execution(symbol)
-                    if result:  # Signal foi executado
-                        executed_signals.append(result)
-                    
-                    # Delay entre símbolos para evitar rate limiting
-                    await asyncio.sleep(1.0)
-                    
-                except Exception as e:
-                    logger.log_error(e, context=f"Sequential analysis error for {symbol}")
-                    continue
+            # Executar análise para todos os símbolos no batch em paralelo
+            tasks = [self._analyze_symbol_with_execution(symbol) for symbol in available_symbols_in_batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.log_error(result, context=f"Parallel analysis error in batch")
+                elif result:  # Signal foi executado
+                    executed_signals.append(result)
+            
+            # Adicionar um pequeno delay entre batches para evitar sobrecarga da API
+            await asyncio.sleep(0.5) # Ajuste este valor conforme necessário
         
         return executed_signals
     
     async def _analyze_symbol_with_execution(self, symbol: str) -> Optional[TradingSignal]:
         """Analisa símbolo e executa imediatamente se encontrar sinal válido"""
         try:
-            # Se já houver posições ativas ou ordens pendentes, não abre novas ordens
-            if self.active_positions or self.pending_orders:
-                logger.info("existing_order_or_position_found", symbol=symbol, active_positions=len(self.active_positions), pending_orders=len(self.pending_orders))
-                return None
             # Log scanning event
             scan_start = time.time()
             log_scan_event(symbol, success=True)
